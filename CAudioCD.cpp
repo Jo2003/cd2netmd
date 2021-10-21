@@ -349,19 +349,18 @@ UINT CAudioCD::cddbId()
 /**
 	create request to be used to obtain disc information
 */
-std::string CAudioCD::cddbRequest(const std::string& host, const std::string& me)
+std::string CAudioCD::cddbQueryPart()
 {
+	uint32_t cddbid = cddbId();
 	std::ostringstream oss;
-	UINT cddbid = cddbId();
-	oss << host << "/~cddb/cddb.cgi?cmd=cddb+query+" << std::hex << cddbid << std::dec << "+" << (cddbid & 0xff);
+	oss << std::hex << cddbid << std::dec << "+" << (cddbid & 0xff);
 	
 	for (const auto& a : m_aTracks)
 	{
 		oss << "+" << (a.Address + 150);
 	}
 	
-	oss << "+" << ((cddbid >> 8) & 0xFFFF) << "&hello=" << me << "+localhost+MyRipper+1&proto=6";
+	oss << "+" << ((cddbid >> 8) & 0xFFFF);
 	
 	return oss.str();
 }
-

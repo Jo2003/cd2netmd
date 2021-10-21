@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include "WinHttpWrapper.h"
 #include "CAudioCD.h"
+#include <iconv.h>
 
 #define YOUR_CDROM_DRIVE 'F'
 
@@ -40,11 +41,137 @@ std::string data;
 bool ready = false;
 bool complete = false;
 
+std::string utf8ToLatin1(const std::string& t)
+{
+	size_t  inSz   = t.size() + 1;
+	size_t  outSz  = inSz;
+	char*   utf8   = new [inSz];
+	char*   latin1 = new [outSz];
+	iconv_t ic     = iconv_open("ISO-8859-1","UTF-8");
+
+	strcpy(utf8, t.c_str());
+	iconv(ic, &utf8, &inSz, &latin1, &outSz);
+
+	std::string ret = latin1;
+
+	delete [] utf8;
+	delete [] latin1;
+
+	return ret;
+}
+
 std::wstring StringToWString(const std::string &s)
 {
     std::wstring ret(s.begin(), s.end());
 
     return ret;
+}
+
+std::string parseResultLine(const std::string& line, std::string& descr)
+{
+	std::ostringstream oss;
+	size_t last = 0; 
+	size_t next = 0; 
+	int    no   = 0;
+
+	while ((next = line.find_first_of(" \n\r\t", last)) != std::string::npos)
+	{
+		if (no == 0)
+		{
+			oss << line.substr(last, next - last) << "+";
+		}
+		else if (no == 1)
+		{
+			oss << line.substr(last, next - last);
+		}
+
+		last = next + 1;
+
+		if (no == 1)
+		{
+			descr = line.substr(last);
+
+			// remove \r
+			if ((next = descr.rfind("\r")) != descr.npos)
+			{
+				descr.erase(next, 1);
+			}
+			break;
+		}
+		no++;
+	}
+	return oss.str();
+}
+
+std::string parseCddbResultsEx(const std::string& input)
+{
+
+	char* endPos;
+	int   code = std::strtol(input.c_str(), &endPos, 0);
+	std::string ret, descr;
+
+	if (endPos != input.c_str())
+	{
+		struct SDisc 
+		{
+			std::string mQuery;
+			std::string mDescr;
+		};
+		std::vector<SDisc> choices;
+		std::istringstream iss(input);
+		std::string line;
+		int         no = 0;
+
+		while(std::getline(iss, line))
+		{
+			switch(code)
+			{
+			// single exact match
+			case 200:
+				ret = parseResultLine(line.substr(line.find_first_of(" \t") + 1), descr);
+				break;
+			// multiple exact matches
+			case 210:
+			// [fallthrough] multiple inexact matches
+			case 211:
+				if (line[0] == '.')
+				{
+					break;
+				}
+
+				if (no++ > 0)
+				{
+					ret = parseResultLine(line, descr);
+					choices.push_back({ret, descr});
+				}
+				break;
+			// anything we wont handle
+			default:
+				break;
+			}
+		}
+
+		if (choices.size())
+		{
+			no = 1;
+			std::cout << "Multiple entries found:" << std::endl;
+			std::cout << "=======================" << std::endl;
+			for(const auto& d : choices)
+			{
+				std::cout << no << ") (" << d.mQuery << ") " << utf8ToLatin1(d.mDescr) << std::endl;
+				no++;
+			}
+			std::cout << "Please choose the entry number to use: ";
+			std::cin >> no;
+
+			if ((no > 0) && (no <= choices.size()))
+			{
+				ret = choices.at(no - 1).mQuery;
+			}
+		}
+	}
+
+	return ret;
 }
 
 std::string parseCddbResults(const std::string& input)
@@ -86,7 +213,7 @@ std::string parseCddbResults(const std::string& input)
 			{
 				if (count == startPos)
 				{
-					ret = tok + "/";
+					ret = tok + "+";
 				}
 				else if(count == (startPos + 1))
 				{
@@ -154,16 +281,16 @@ int toNetMD(NetMDCmds cmd, const std::string& file = "", const std::string& titl
 		cmdLine << "erase_disc";
 		break;
 	case NetMDCmds::DISC_TITLE:
-		cmdLine << "title \"" << title << "\"";
+		cmdLine << "title \"" << utf8ToLatin1(title) << "\"";
 		break;
 	case NetMDCmds::WRITE_TRACK:
-		cmdLine << "send \"" << file << "\" \"" << title << "\"";
+		cmdLine << "send \"" << file << "\" \"" << utf8ToLatin1(title) << "\"";
 		break;
 	case NetMDCmds::WRITE_TRACK_LP2:
-		cmdLine << "-d lp2 send \"" << file << "\" \"" << title << "\"";
+		cmdLine << "-d lp2 send \"" << file << "\" \"" << utf8ToLatin1(title) << "\"";
 		break;
 	case NetMDCmds::WRITE_TRACK_LP4:
-		cmdLine << "-d lp4 send \"" << file << "\" \"" << title << "\"";
+		cmdLine << "-d lp4 send \"" << file << "\" \"" << utf8ToLatin1(title) << "\"";
 		break;
 	default:
 		err = -1;
@@ -213,6 +340,11 @@ int toNetMD(NetMDCmds cmd, const std::string& file = "", const std::string& titl
 	return err;
 }
 
+//------------------------------------------------------------------------------
+//! @brief      thread function for netmd transfer
+//!
+//! @return     0
+//------------------------------------------------------------------------------
 int tfunc_mdwrite()
 {
 	STrackDescr currJob;
@@ -257,6 +389,13 @@ int main(int argc, const char* argv[])
 {
 	(void)argc;
 	(void)argv;
+	std::ostringstream oss;
+
+	// Set console code page to UTF-8 so console known how to interpret string data
+    // SetConsoleOutputCP(CP_UTF8);
+
+    // Enable buffering to prevent VS from chopping up UTF-8 byte sequences
+    // setvbuf(stdout, nullptr, _IOFBF, 1000);
 	
 	TCHAR tmpPath[MAX_PATH];
 	GetTempPathA(MAX_PATH, tmpPath);
@@ -281,33 +420,30 @@ int main(int argc, const char* argv[])
     
     AudioCD.printTOC();
     
+    oss << "/~cddb/cddb.cgi?cmd=cddb+query+" << AudioCD.cddbQueryPart() << "&hello=me@you.org+localhost+MyRipper+0.0.1&proto=6";
     printf("CDDB ID: 0x%08x\n", AudioCD.cddbId());
-    printf("CDDB Request: %s\n", AudioCD.cddbRequest("http://gnudb.gnudb.org", "me@you.org").c_str());
+    printf("CDDB Request: http://gnudb.gnudb.org%s\n",oss.str().c_str());
     
     WinHttpWrapper::HttpRequest req(L"gnudb.gnudb.org", 443, true);
     WinHttpWrapper::HttpResponse resp;
-    // const char* contentType = "Content-Type: text/plain";
     
-    if (req.Get(StringToWString(AudioCD.cddbRequest("", "me@you.org")), L"Content-Type: text/plain", resp))
+    if (req.Get(StringToWString(oss.str()), L"Content-Type: text/plain; charset=utf-8", resp))
     {
-    	printf("%s\n", resp.text.c_str());
-    	
-    	req.setup(L"gnudb.org", 443, true);
-    	std::ostringstream oss;
-    	oss << "/gnudb/" << parseCddbResults(resp.text);
+    	oss.clear();
+    	oss.str("");
+    	oss << "/~cddb/cddb.cgi?cmd=cddb+read+" << parseCddbResultsEx(resp.text) << "&hello=me@you.org+localhost+MyRipper+0.0.1&proto=6";
+    	printf("CDDB Data: http://gnudb.gnudb.org%s\n",oss.str().c_str());
 	
 		resp.Reset();
 		
-		std::cout << "Resquest CDDB entry: " << oss.str() << std::endl;
-		
-		if (req.Get(StringToWString(oss.str()), L"Content-Type: text/plain", resp))
+	
+		if (req.Get(StringToWString(oss.str()), L"Content-Type: text/plain; charset=utf-8", resp))
     	{
-    		std::cout << resp.text << std::endl;
     		parseCddbInfo(resp.text, tracks);
     		
     		for (const auto& t : tracks)
     		{
-    			std::cout << t << std::endl;
+    			std::cout << utf8ToLatin1(t) << std::endl;
 			}
     	}
 	}
@@ -316,7 +452,6 @@ int main(int argc, const char* argv[])
 	{
 		toNetMD(NetMDCmds::ERASE_DISC);
 		toNetMD(NetMDCmds::DISC_TITLE, "", tracks.at(0));
-		std::ostringstream oss;
 		
 		char fname[MAX_PATH];
 		

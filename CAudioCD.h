@@ -129,13 +129,12 @@ class CAudioCD
 			return cddb id for title search
 		*/
 		UINT cddbId();
-		
+
 		/**
 			create request to be used to obtain disc information
 		*/
-		std::string cddbRequest(const std::string& host, const std::string& me);
-
-
+		std::string cddbQueryPart();
+		
 	protected:
 		HANDLE					m_hCD;
 		std::vector<CDTRACK>	m_aTracks;
