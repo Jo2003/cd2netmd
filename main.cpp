@@ -11,7 +11,6 @@
 #include <sys/types.h>
 #include "WinHttpWrapper.h"
 #include "CAudioCD.h"
-#include <iconv.h>
 
 #define YOUR_CDROM_DRIVE 'F'
 
@@ -40,25 +39,6 @@ std::condition_variable cv;
 std::string data;
 bool ready = false;
 bool complete = false;
-
-std::string utf8ToLatin1(const std::string& t)
-{
-	size_t  inSz   = t.size() + 1;
-	size_t  outSz  = inSz;
-	char*   utf8   = new [inSz];
-	char*   latin1 = new [outSz];
-	iconv_t ic     = iconv_open("ISO-8859-1","UTF-8");
-
-	strcpy(utf8, t.c_str());
-	iconv(ic, &utf8, &inSz, &latin1, &outSz);
-
-	std::string ret = latin1;
-
-	delete [] utf8;
-	delete [] latin1;
-
-	return ret;
-}
 
 std::wstring StringToWString(const std::string &s)
 {
@@ -120,7 +100,7 @@ std::string parseCddbResultsEx(const std::string& input)
 		std::vector<SDisc> choices;
 		std::istringstream iss(input);
 		std::string line;
-		int         no = 0;
+		size_t      no = 0;
 
 		while(std::getline(iss, line))
 		{
@@ -154,11 +134,13 @@ std::string parseCddbResultsEx(const std::string& input)
 		if (choices.size())
 		{
 			no = 1;
+			std::cout << std::endl 
+			          << "=======================" << std::endl;
 			std::cout << "Multiple entries found:" << std::endl;
 			std::cout << "=======================" << std::endl;
 			for(const auto& d : choices)
 			{
-				std::cout << no << ") (" << d.mQuery << ") " << utf8ToLatin1(d.mDescr) << std::endl;
+				std::cout << no << ") (" << d.mQuery << ") " << d.mDescr << std::endl;
 				no++;
 			}
 			std::cout << "Please choose the entry number to use: ";
@@ -180,7 +162,7 @@ std::string parseCddbResults(const std::string& input)
 	ssize_t pos = std::string::npos;
 	char* endPos;
 	int   code = 0; 
-	int   startPos;
+	int   startPos = -1;
 	
 	std::istringstream iss(input);
 	while(std::getline(iss, line))
@@ -235,7 +217,7 @@ std::string parseCddbResults(const std::string& input)
 int parseCddbInfo(const std::string& input, std::vector<std::string>& info)
 {
 	std::string line, tok;
-	ssize_t pos;
+	size_t pos;
 	std::istringstream iss(input);
 	while(std::getline(iss, line))
 	{
@@ -281,16 +263,16 @@ int toNetMD(NetMDCmds cmd, const std::string& file = "", const std::string& titl
 		cmdLine << "erase_disc";
 		break;
 	case NetMDCmds::DISC_TITLE:
-		cmdLine << "title \"" << utf8ToLatin1(title) << "\"";
+		cmdLine << "title \"" << title << "\"";
 		break;
 	case NetMDCmds::WRITE_TRACK:
-		cmdLine << "send \"" << file << "\" \"" << utf8ToLatin1(title) << "\"";
+		cmdLine << "send \"" << file << "\" \"" << title << "\"";
 		break;
 	case NetMDCmds::WRITE_TRACK_LP2:
-		cmdLine << "-d lp2 send \"" << file << "\" \"" << utf8ToLatin1(title) << "\"";
+		cmdLine << "-d lp2 send \"" << file << "\" \"" << title << "\"";
 		break;
 	case NetMDCmds::WRITE_TRACK_LP4:
-		cmdLine << "-d lp4 send \"" << file << "\" \"" << utf8ToLatin1(title) << "\"";
+		cmdLine << "-d lp4 send \"" << file << "\" \"" << title << "\"";
 		break;
 	default:
 		err = -1;
@@ -392,10 +374,10 @@ int main(int argc, const char* argv[])
 	std::ostringstream oss;
 
 	// Set console code page to UTF-8 so console known how to interpret string data
-    // SetConsoleOutputCP(CP_UTF8);
+    SetConsoleOutputCP(CP_UTF8);
 
     // Enable buffering to prevent VS from chopping up UTF-8 byte sequences
-    // setvbuf(stdout, nullptr, _IOFBF, 1000);
+    setvbuf(stdout, nullptr, _IOFBF, 1000);
 	
 	TCHAR tmpPath[MAX_PATH];
 	GetTempPathA(MAX_PATH, tmpPath);
@@ -415,14 +397,12 @@ int main(int argc, const char* argv[])
     for ( ULONG i=0; i<TrackCount; i++ )
     {
         ULONG Time = AudioCD.GetTrackTime( i );
-        printf( "Track %i: %i:%.2i;  %i bytes of size\n", i+1, Time/60, Time%60, AudioCD.GetTrackSize(i) );
+        printf( "Track %i: %i:%.2i;  %i bytes\n", i+1, Time/60, Time%60, AudioCD.GetTrackSize(i) );
     }
     
-    AudioCD.printTOC();
-    
     oss << "/~cddb/cddb.cgi?cmd=cddb+query+" << AudioCD.cddbQueryPart() << "&hello=me@you.org+localhost+MyRipper+0.0.1&proto=6";
-    printf("CDDB ID: 0x%08x\n", AudioCD.cddbId());
-    printf("CDDB Request: http://gnudb.gnudb.org%s\n",oss.str().c_str());
+    printf("\nCDDB ID: 0x%08x\n", AudioCD.cddbId());
+    // printf("CDDB Request: http://gnudb.gnudb.org%s\n",oss.str().c_str());
     
     WinHttpWrapper::HttpRequest req(L"gnudb.gnudb.org", 443, true);
     WinHttpWrapper::HttpResponse resp;
@@ -432,19 +412,13 @@ int main(int argc, const char* argv[])
     	oss.clear();
     	oss.str("");
     	oss << "/~cddb/cddb.cgi?cmd=cddb+read+" << parseCddbResultsEx(resp.text) << "&hello=me@you.org+localhost+MyRipper+0.0.1&proto=6";
-    	printf("CDDB Data: http://gnudb.gnudb.org%s\n",oss.str().c_str());
+    	// printf("CDDB Data: http://gnudb.gnudb.org%s\n",oss.str().c_str());
 	
 		resp.Reset();
-		
 	
 		if (req.Get(StringToWString(oss.str()), L"Content-Type: text/plain; charset=utf-8", resp))
     	{
     		parseCddbInfo(resp.text, tracks);
-    		
-    		for (const auto& t : tracks)
-    		{
-    			std::cout << utf8ToLatin1(t) << std::endl;
-			}
     	}
 	}
 	

@@ -3,11 +3,11 @@ CC       = gcc.exe
 WINDRES  = windres.exe
 OBJ      = main.o AudioCD_Helpers.o CAudioCD.o WinHttpWrapper.o
 LINKOBJ  = main.o AudioCD_Helpers.o CAudioCD.o WinHttpWrapper.o
-LIBS     = -static-libgcc -s -lwinhttp
+LIBS     = -static -static-libgcc -s -lwinhttp
 INCS     = 
 CXXINCS  = 
 BIN      = cd2netmd.exe
-CXXFLAGS = $(CXXINCS) -std=c++11 -Os
+CXXFLAGS = $(CXXINCS) -std=c++11 -Os -W
 CFLAGS   = $(INCS) -std=c++11 -Os
 DEL      = rm.exe
 
@@ -16,19 +16,19 @@ DEL      = rm.exe
 all: all-before $(BIN) all-after
 
 clean: clean-custom
-	${DEL} $(OBJ) $(BIN)
+	${DEL} -rf $(OBJ) $(BIN)
 
 $(BIN): $(OBJ)
 	$(CPP) $(LINKOBJ) -o $(BIN) $(LIBS)
 
 main.o: main.cpp
-	$(CPP) -c main.cpp -o main.o $(CXXFLAGS)
+	$(CPP) $(CXXFLAGS) -c main.cpp -o main.o
 
 AudioCD_Helpers.o: AudioCD_Helpers.cpp
-	$(CPP) -c AudioCD_Helpers.cpp -o AudioCD_Helpers.o $(CXXFLAGS)
+	$(CPP) $(CXXFLAGS) -c AudioCD_Helpers.cpp -o AudioCD_Helpers.o 
 
 CAudioCD.o: CAudioCD.cpp
-	$(CPP) -c CAudioCD.cpp -o CAudioCD.o $(CXXFLAGS)
+	$(CPP) $(CXXFLAGS) -c CAudioCD.cpp -o CAudioCD.o
 
 WinHttpWrapper.o: WinHttpWrapper.cpp
-	$(CPP) -c WinHttpWrapper.cpp -o WinHttpWrapper.o $(CXXFLAGS)
+	$(CPP) $(CXXFLAGS) -c WinHttpWrapper.cpp -o WinHttpWrapper.o
