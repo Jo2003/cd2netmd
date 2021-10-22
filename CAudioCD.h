@@ -23,8 +23,8 @@
 // Structure to hold the basic information for a cd-track
 struct CDTRACK
 {
-	ULONG Address;
-	ULONG Length;
+    ULONG Address;
+    ULONG Length;
 };
 
 
@@ -40,105 +40,105 @@ struct CDTRACK
 // AudioCD.ExtractTrack( 7, "C:\\MyTrack.wav" );
 class CAudioCD
 {
-	public:
-		// CONSTRUCTOR / DESTRUCTOR
+    public:
+        // CONSTRUCTOR / DESTRUCTOR
 
-		// Initializes the class. If you specify a letter for
-		//   'Drive', it acts like a call to "Open".
-		CAudioCD( char Drive='\0' );
+        // Initializes the class. If you specify a letter for
+        //   'Drive', it acts like a call to "Open".
+        CAudioCD( char Drive='\0' );
 
-		// Destructs the class, acts like a call to "Close".
-		~CAudioCD();
-
-
-
-
-		// OPEN / CLOSE ACCESS TO CD-DRIVE
-
-		// Opens a handle to the drive, locks it and gets track-information
-		BOOL Open( char Drive );
-
-		// Returns whether the CD-drive has been opened
-		BOOL IsOpened();
-
-		// Unlocks the CD-Drive and shuts down the access.
-		// Basically resets the class.
-		void Close();
+        // Destructs the class, acts like a call to "Close".
+        ~CAudioCD();
 
 
 
 
-		// READ / GET TRACK-DATA
+        // OPEN / CLOSE ACCESS TO CD-DRIVE
 
-		// Returns the number of tracks avaiable.
-		// 0xFFFFFFFF on failure (e.g. no "Open" called)
-		ULONG GetTrackCount();
+        // Opens a handle to the drive, locks it and gets track-information
+        BOOL Open( char Drive );
 
-		// Returns the length in seconds of an audio-track.
-		// 0xFFFFFFFF on failure (e.g. no "Open" called)
-		ULONG GetTrackTime( ULONG Track );
+        // Returns whether the CD-drive has been opened
+        BOOL IsOpened();
 
-		// Returns the size (in bytes) of an audio-track
-		// 0xFFFFFFFF on failure (e.g. no "Open" called)
-		ULONG GetTrackSize( ULONG Track );
-
-		// Stores the audio-track-data into the specified buffer.
-		// The buffer is allocated by the function.
-		// Be careful: An audio-track of 4 minutes is about 40 MB of size!
-		BOOL ReadTrack( ULONG Track, CBuf<char>* pBuf );
-
-		// Saves down the given track to a file (Path).
-		// That file will be in valid wav-format with the default
-		//   cd-audio-attributes: 44100Hz, 16Bit, Stereo
-		BOOL ExtractTrack( ULONG Track, LPCTSTR Path );
+        // Unlocks the CD-Drive and shuts down the access.
+        // Basically resets the class.
+        void Close();
 
 
 
 
-		// LOCK / UNLOCK CD-DRIVE
+        // READ / GET TRACK-DATA
 
-		// Locks the CD-drive, so the user should(!) not be able to be
-		//   open the drive.
-		BOOL LockCD();
+        // Returns the number of tracks avaiable.
+        // 0xFFFFFFFF on failure (e.g. no "Open" called)
+        ULONG GetTrackCount();
 
-		// Unlocks the CD-drive, so it can be ejected.
-		BOOL UnlockCD();
+        // Returns the length in seconds of an audio-track.
+        // 0xFFFFFFFF on failure (e.g. no "Open" called)
+        ULONG GetTrackTime( ULONG Track );
+
+        // Returns the size (in bytes) of an audio-track
+        // 0xFFFFFFFF on failure (e.g. no "Open" called)
+        ULONG GetTrackSize( ULONG Track );
+
+        // Stores the audio-track-data into the specified buffer.
+        // The buffer is allocated by the function.
+        // Be careful: An audio-track of 4 minutes is about 40 MB of size!
+        BOOL ReadTrack( ULONG Track, CBuf<char>* pBuf );
+
+        // Saves down the given track to a file (Path).
+        // That file will be in valid wav-format with the default
+        //   cd-audio-attributes: 44100Hz, 16Bit, Stereo
+        BOOL ExtractTrack( ULONG Track, LPCTSTR Path );
 
 
 
 
-		// GENERAL OPERATIONS
+        // LOCK / UNLOCK CD-DRIVE
 
-		// Gets the cd into you computer.
-		BOOL InjectCD();
+        // Locks the CD-drive, so the user should(!) not be able to be
+        //   open the drive.
+        BOOL LockCD();
 
-		// Returns whether the CD is inserted and ready to be read.
-		// If you specify no drive-letter, the CD must have been opened by
-		//   a call to "Open".
-		BOOL IsCDReady( char Drive='\0' );
+        // Unlocks the CD-drive, so it can be ejected.
+        BOOL UnlockCD();
 
-		// Ejects the cd (so the user can change the cd or whatever...)
-		BOOL EjectCD();
-		
-		/**
-		   print table of contents
-		*/
-		void printTOC();
-		
-		/**
-			return cddb id for title search
-		*/
-		UINT cddbId();
 
-		/**
-			create request to be used to obtain disc information
-		*/
-		std::string cddbQueryPart();
-		
-	protected:
-		HANDLE					m_hCD;
-		std::vector<CDTRACK>	m_aTracks;
-		CDROM_TOC               m_TOC;
+
+
+        // GENERAL OPERATIONS
+
+        // Gets the cd into you computer.
+        BOOL InjectCD();
+
+        // Returns whether the CD is inserted and ready to be read.
+        // If you specify no drive-letter, the CD must have been opened by
+        //   a call to "Open".
+        BOOL IsCDReady( char Drive='\0' );
+
+        // Ejects the cd (so the user can change the cd or whatever...)
+        BOOL EjectCD();
+        
+        /**
+           print table of contents
+        */
+        void printTOC();
+        
+        /**
+            return cddb id for title search
+        */
+        UINT cddbId();
+
+        /**
+            create request to be used to obtain disc information
+        */
+        std::string cddbQueryPart();
+        
+    protected:
+        HANDLE                  m_hCD;
+        std::vector<CDTRACK>    m_aTracks;
+        CDROM_TOC               m_TOC;
 };
 
 
