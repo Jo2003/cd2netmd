@@ -52,6 +52,7 @@ bool complete = false;      ///< synchronization helper
 bool        g_bVerbose;     ///< do verbose output if set
 bool        g_bHelp;        ///< print help if set
 bool        g_bNoMdDelete;  ///< don't delte MD before writing if set
+bool        g_bNoCDDBLookup;///< don't use CDDB lookup
 char        g_cDrive;       ///< drive letter of CD drive
 std::string g_sEncoding;    ///< NetMD encoding
 
@@ -394,11 +395,12 @@ int main(int argc, char** argv)
 {
     std::ostringstream oss;
     Flags parser;
-    parser.Bool(g_bVerbose    , 'v', "verbose"  , "Do verbose output.");
-    parser.Bool(g_bHelp       , 'h', "help"     , "Print help screen and exits program.");
-    parser.Bool(g_bNoMdDelete , 'n', "no-delete", "Do not erase MD before writing. In that case also disc title isn't changed.");
-    parser.Var (g_cDrive      , 'd', "drive"    , '-'              , "Drive letter of CD drive to use (w/o colon). If not given first drive found will be used.");
-    parser.Var (g_sEncoding   , 'e', "encode"   , std::string{"sp"}, "Encoding for NetMD transfer. Default is 'sp'. MDLP modi (lp2, lp4) are only supported on SHARP IM-DR4x0, Sony MDS-JB980, Sony MDS-JB780");
+    parser.Bool(g_bVerbose     , 'v', "verbose"  , "Do verbose output.");
+    parser.Bool(g_bHelp        , 'h', "help"     , "Print help screen and exits program.");
+    parser.Bool(g_bNoMdDelete  , 'n', "no-delete", "Do not erase MD before writing. In that case also disc title isn't changed.");
+    parser.Bool(g_bNoCDDBLookup, 'c', "no-cddb"  , "Ignore CDDB lookup errors.");
+    parser.Var (g_cDrive       , 'd', "drive"    , '-'              , "Drive letter of CD drive to use (w/o colon). If not given first drive found will be used.");
+    parser.Var (g_sEncoding    , 'e', "encode"   , std::string{"sp"}, "Encoding for NetMD transfer. Default is 'sp'. MDLP modi (lp2, lp4) are only supported on SHARP IM-DR4x0, Sony MDS-JB980, Sony MDS-JB780");
     
     if (!parser.Parse(argc, argv)) 
     {
@@ -490,12 +492,12 @@ int main(int argc, char** argv)
         }
     }
     
-    if (!tracks.empty())
+    if (!tracks.empty() || g_bNoCDDBLookup)
     {
         if (!g_bNoMdDelete)
         {
             toNetMD(NetMDCmds::ERASE_DISC);
-            toNetMD(NetMDCmds::DISC_TITLE, "", tracks.at(0));
+            toNetMD(NetMDCmds::DISC_TITLE, "", tracks.empty() ? "" : tracks.at(0));
         }
         
         char fname[MAX_PATH];
@@ -510,7 +512,7 @@ int main(int argc, char** argv)
             AudioCD.ExtractTrack(i, fname);
             
             mtxTracks.lock();
-            TracksDescr.push_back({tracks.at(i+1), fname});
+            TracksDescr.push_back({(tracks.empty() ? "" : tracks.at(i+1)), fname});
             mtxTracks.unlock();
             
             // notify md write thread
