@@ -7,8 +7,8 @@ LIBS     = -static -static-libgcc -s -lwinhttp
 INCS     = 
 CXXINCS  = 
 BIN      = cd2netmd.exe
-CXXFLAGS = $(CXXINCS) -std=c++11 -Os -W
-CFLAGS   = $(INCS) -std=c++11 -Os
+CXXFLAGS = $(CXXINCS) -std=c++17 -Os -W
+CFLAGS   = $(INCS) -std=c++17 -Os
 DEL      = rm.exe
 
 .PHONY: all all-before all-after clean clean-custom

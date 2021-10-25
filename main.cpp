@@ -1,5 +1,8 @@
 #include <cctype>
 #include <cstdio>
+#include <fileapi.h>
+#include <handleapi.h>
+#include <ostream>
 #include <string>
 #include <iostream>
 #include <sstream>
@@ -11,9 +14,19 @@
 #include <tchar.h>
 #include <sys/types.h>
 #include <algorithm>
+#include <winnt.h>
 #include "WinHttpWrapper.h"
 #include "CAudioCD.h"
 #include "Flags.hh"
+
+/// tool chain path
+static constexpr const char* TOOLCHAIN_PATH = "toolchain/";
+
+/// Sony WAVE format
+static const uint32_t WAVE_FORMAT_SONY_SCX = 624;
+
+/// atrac3 header size in bytes
+static const uint32_t ATRAC3_HEADER_SIZE = 96;
 
 /// do verbose output if enabled
 #define VERBOSE(...) if (g_bVerbose) __VA_ARGS__
@@ -55,6 +68,7 @@ bool        g_bNoMdDelete;  ///< don't delte MD before writing if set
 bool        g_bNoCDDBLookup;///< don't use CDDB lookup
 char        g_cDrive;       ///< drive letter of CD drive
 std::string g_sEncoding;    ///< NetMD encoding
+std::string g_sXEncoding;   ///< NetMD external encoding
 
 //------------------------------------------------------------------------------
 //! @brief      convert std::string to std::wstring
@@ -239,6 +253,172 @@ int parseCddbInfo(const std::string& input, std::vector<std::string>& info)
 }
 
 //------------------------------------------------------------------------------
+//! @brief      do extern atrac3 encode using atracdenc
+//!
+//! @param[in]  file  The file name to encode
+//!
+//! @return     0 -> ok; else -> error
+//------------------------------------------------------------------------------
+int externAtrac3Encode(const std::string& file)
+{
+    int err = 0;
+    std::string atracFile = file + ".aea";
+    std::ostringstream cmdLine;
+    cmdLine << TOOLCHAIN_PATH << "atracdenc.exe ";
+
+    std::string enc = g_sXEncoding;
+
+    // encoding to lower case
+    std::transform(enc.begin(), enc.end(), enc.begin(),
+        [](unsigned char c){ return std::tolower(c); });
+
+    NetMDCmds mode = NetMDCmds::UNKNOWN;
+
+    if (enc == "lp2")
+    {
+        cmdLine << "-e atrac3 --bitrate=128 ";
+        mode = NetMDCmds::WRITE_TRACK_LP2;
+    }
+    else if (enc == "lp4")
+    {
+        cmdLine << "-e atrac3 --bitrate=64 ";
+        mode = NetMDCmds::WRITE_TRACK_LP4;
+    }
+    else
+    {
+        err = -1;
+    }
+
+    if (err == 0)
+    {
+        cmdLine << " -i \"" << file << "\" -o \"" << atracFile << "\"";
+        VERBOSE(std::cout << "Running command: " << cmdLine.str() << std::endl);
+        char* pCmd = new char[cmdLine.str().size() + 1];
+        strcpy(pCmd, cmdLine.str().c_str());
+        
+        STARTUPINFO si;
+        PROCESS_INFORMATION pi;
+    
+        ZeroMemory( &si, sizeof(si) );
+        si.cb = sizeof(si);
+        ZeroMemory( &pi, sizeof(pi) );
+
+        // Start the child process. 
+        if( !CreateProcess( NULL,   // No module name (use command line)
+            pCmd,           // Command line
+            NULL,           // Process handle not inheritable
+            NULL,           // Thread handle not inheritable
+            FALSE,          // Set handle inheritance to FALSE
+            0,              // No creation flags
+            NULL,           // Use parent's environment block
+            NULL,           // Use parent's starting directory 
+            &si,            // Pointer to STARTUPINFO structure
+            &pi )           // Pointer to PROCESS_INFORMATION structure
+        ) 
+        {
+            printf( "CreateProcess failed (%d).\n", GetLastError() );
+            err = -2;
+        }
+    
+        // Wait until child process exits.
+        WaitForSingleObject( pi.hProcess, INFINITE );
+    
+        // Close process and thread handles. 
+        CloseHandle( pi.hProcess );
+        CloseHandle( pi.hThread );
+        
+        delete [] pCmd;
+
+        // open atrac file for size check
+        HANDLE hAtrac = CreateFileA(atracFile.c_str(), GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+        DWORD sz = 0;
+
+        if (hAtrac != INVALID_HANDLE_VALUE)
+        {
+            // get file size
+            sz = GetFileSize(hAtrac, nullptr) - ATRAC3_HEADER_SIZE;
+
+            FILE *fWave = fopen(file.c_str(), "wb");
+    
+            if (fWave != nullptr)
+            {
+                std::cout << "Wrap Atrac3 file ... " << std::flush;
+
+                // heavily inspired by atrac3tool and completed through
+                // reverse engineering of ffmpeg output ...
+                char dstFormatBuf[0x20];
+                WAVEFORMATEX *pDstFormat = (WAVEFORMATEX *)dstFormatBuf;
+                pDstFormat->wFormatTag = WAVE_FORMAT_SONY_SCX;
+                pDstFormat->nChannels = 2;
+                pDstFormat->nSamplesPerSec = 44100;
+                if (mode == NetMDCmds::WRITE_TRACK_LP2)
+                {
+                    pDstFormat->nAvgBytesPerSec = 16537;
+                    pDstFormat->nBlockAlign = 0x180;
+                    memcpy(&dstFormatBuf[0x12], "\x01\x00\x44\xAC\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00", 0xE);
+                }
+                else if (mode == NetMDCmds::WRITE_TRACK_LP4)
+                {
+                    pDstFormat->nAvgBytesPerSec = 8268;
+                    pDstFormat->nBlockAlign = 0xc0;
+                    memcpy(&dstFormatBuf[0x12], "\x01\x00\x44\xAC\x00\x00\x01\x00\x01\x00\x01\x00\x00\x00", 0xE);
+                }
+                
+                pDstFormat->wBitsPerSample = 0;
+                pDstFormat->cbSize = 0xE;
+
+                DWORD written = 0, read = 0, copied = 0;
+
+                DWORD32 i = 0xC + 8 + 0x20 + 8 + sz - 8;
+
+                fwrite("RIFF", 1, 4, fWave);
+                fwrite(&i, 4, 1, fWave);
+                fwrite("WAVE", 1, 4, fWave);
+
+                fwrite("fmt ", 1, 4, fWave);
+                i = 0x20;
+                fwrite(&i, 4, 1, fWave);
+                fwrite(dstFormatBuf, 1, 0x20, fWave);
+
+                fwrite("data", 1, 4, fWave);
+                i = sz;
+                fwrite(&i, 4, 1, fWave);
+
+                unsigned char buff[16'384];
+
+                // drop atrac 3 header
+                ReadFile(hAtrac, buff, ATRAC3_HEADER_SIZE, &read, NULL);
+
+                // copy atrac file to wave file
+                do
+                {
+                    // read 16k at once
+                    ReadFile(hAtrac, buff, 16'384, &read, NULL);
+
+                    written = 0;
+
+                    while(written < read)
+                    {
+                        written += fwrite(&buff[written], 1, read - written, fWave);
+                    }
+                    copied += written;
+                }
+                while(copied < sz);
+
+                std::cout << " done!" << std::endl;
+                
+                fclose(fWave);
+            }
+
+            CloseHandle(hAtrac);
+            if (!g_bVerbose) _unlink(atracFile.c_str());
+        }
+    }
+    return err;
+}
+
+//------------------------------------------------------------------------------
 //! @brief      run NetMD command through external program (go-netmd-cli)
 //!
 //! @param[in]  cmd    The command
@@ -251,7 +431,7 @@ int toNetMD(NetMDCmds cmd, const std::string& file = "", const std::string& titl
 {
     int err = 0;
     std::ostringstream cmdLine;
-    cmdLine << "netmd-cli.exe -y ";
+    cmdLine << TOOLCHAIN_PATH << "netmd-cli.exe -y ";
 
     if (g_bVerbose)
     {
@@ -333,19 +513,23 @@ int tfunc_mdwrite()
     STrackDescr currJob;
     bool        go     = true;
     NetMDCmds   wrtCmd = NetMDCmds::WRITE_TRACK;
-    std::string enc    = g_sEncoding;
 
-    // encoding to lower case
-    std::transform(enc.begin(), enc.end(), enc.begin(),
-        [](unsigned char c){ return std::tolower(c); });
+    if (g_sXEncoding == "no")
+    {
+        std::string enc = g_sEncoding;
 
-    if (enc == "lp2")
-    {
-        wrtCmd = NetMDCmds::WRITE_TRACK_LP2;
-    }
-    else if (enc == "lp4")
-    {
-        wrtCmd = NetMDCmds::WRITE_TRACK_LP4;
+        // encoding to lower case
+        std::transform(enc.begin(), enc.end(), enc.begin(),
+            [](unsigned char c){ return std::tolower(c); });
+
+        if (enc == "lp2")
+        {
+            wrtCmd = NetMDCmds::WRITE_TRACK_LP2;
+        }
+        else if (enc == "lp4")
+        {
+            wrtCmd = NetMDCmds::WRITE_TRACK_LP4;
+        }
     }
     
     do
@@ -368,8 +552,12 @@ int tfunc_mdwrite()
         
         if (!currJob.mFile.empty())
         {
+            if (g_sXEncoding != "no")
+            {
+                externAtrac3Encode(currJob.mFile);
+            }
             toNetMD(wrtCmd, currJob.mFile, currJob.mName);
-            _unlink(currJob.mFile.c_str());
+            if (!g_bVerbose) _unlink(currJob.mFile.c_str());
         }
         else if (go)
         {
@@ -395,12 +583,13 @@ int main(int argc, char** argv)
 {
     std::ostringstream oss;
     Flags parser;
-    parser.Bool(g_bVerbose     , 'v', "verbose"  , "Do verbose output.");
-    parser.Bool(g_bHelp        , 'h', "help"     , "Print help screen and exits program.");
-    parser.Bool(g_bNoMdDelete  , 'n', "no-delete", "Do not erase MD before writing. In that case also disc title isn't changed.");
-    parser.Bool(g_bNoCDDBLookup, 'c', "no-cddb"  , "Ignore CDDB lookup errors.");
-    parser.Var (g_cDrive       , 'd', "drive"    , '-'              , "Drive letter of CD drive to use (w/o colon). If not given first drive found will be used.");
-    parser.Var (g_sEncoding    , 'e', "encode"   , std::string{"sp"}, "Encoding for NetMD transfer. Default is 'sp'. MDLP modi (lp2, lp4) are only supported on SHARP IM-DR4x0, Sony MDS-JB980, Sony MDS-JB780");
+    parser.Bool(g_bVerbose     , 'v', "verbose"      , "Do verbose output.");
+    parser.Bool(g_bHelp        , 'h', "help"         , "Print help screen and exits program.");
+    parser.Bool(g_bNoMdDelete  , 'n', "no-delete"    , "Do not erase MD before writing. In that case also disc title isn't changed.");
+    parser.Bool(g_bNoCDDBLookup, 'c', "no-cddb"      , "Ignore CDDB lookup errors.");
+    parser.Var (g_cDrive       , 'd', "drive"        , '-'              , "Drive letter of CD drive to use (w/o colon). If not given first drive found will be used.");
+    parser.Var (g_sEncoding    , 'e', "encode"       , std::string{"sp"}, "Encoding for NetMD transfer. Default is 'sp'. MDLP modi (lp2, lp4) are only supported on SHARP IM-DR4x0, Sony MDS-JB980, Sony MDS-JB780.");
+    parser.Var (g_sXEncoding   , 'x', "ext-encode"   , std::string{"no"}, "External encoding for NetMD transfer. Default is 'no'. MDLP modi (lp2, lp4) are supported.");
     
     if (!parser.Parse(argc, argv)) 
     {
