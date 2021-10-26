@@ -22,7 +22,8 @@ set(CMAKE_CXX_FLAGS "-W -Wall")
 set(CMAKE_CXX_FLAGS_DEBUG "-g")
 set(CMAKE_CXX_FLAGS_RELEASE "-Os")
 
-SET(CMAKE_EXE_LINKER_FLAGS "-s -static -static-libgcc")
+SET(CMAKE_EXE_LINKER_FLAGS "-static -static-libgcc")
+SET(CMAKE_EXE_LINKER_FLAGS_RELEASE "-s")
 
 add_executable(cd2netmd ${SOURCES})
 target_link_libraries(cd2netmd "winhttp")

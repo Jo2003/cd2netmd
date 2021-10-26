@@ -48,7 +48,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 class Flags {
   public:
-    Flags() : autoId(256) { }
+    Flags(size_t cols = 80) : autoId(256) ,mCols(cols) { }
 
     template <typename T>
     void Var(T & var, char shortFlag, std::string longFlag, T defaultValue, std::string description, std::string descriptionGroup = "");
@@ -71,6 +71,7 @@ class Flags {
 
     template <typename T>
     void entry(struct option & op, char shortFlag, std::string longFlag, T & defaultValue, std::string description, std::string descriptionGroup);
+    size_t mCols;
 };
 
 
@@ -115,7 +116,7 @@ inline void Flags::entry(struct option & op, char shortFlag, std::string longFla
   std::string tok;
   std::size_t cpos;
 
-  constexpr size_t step = 80 - 6;
+  size_t step = mCols - 6;
   for (size_t i = 0; i < description.size(); /* i += step */ ) {
     ss << "      ";
     if (i + step < description.size()) {
@@ -154,7 +155,7 @@ inline void Flags::Var(T & var, char shortFlag, std::string longFlag, T defaultV
 
 inline void Flags::Bool(bool & var, char shortFlag, std::string longFlag, std::string description, std::string descriptionGroup) {
   struct option op;
-  this->entry(op, shortFlag, longFlag, "(unset)", description, descriptionGroup);
+  this->entry(op, shortFlag, longFlag, "false", description, descriptionGroup);
 
   op.has_arg = no_argument;
   var = false;

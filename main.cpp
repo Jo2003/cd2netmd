@@ -582,14 +582,31 @@ int tfunc_mdwrite()
 int main(int argc, char** argv)
 {
     std::ostringstream oss;
-    Flags parser;
-    parser.Bool(g_bVerbose     , 'v', "verbose"      , "Do verbose output.");
-    parser.Bool(g_bHelp        , 'h', "help"         , "Print help screen and exits program.");
-    parser.Bool(g_bNoMdDelete  , 'n', "no-delete"    , "Do not erase MD before writing. In that case also disc title isn't changed.");
-    parser.Bool(g_bNoCDDBLookup, 'c', "no-cddb"      , "Ignore CDDB lookup errors.");
-    parser.Var (g_cDrive       , 'd', "drive"        , '-'              , "Drive letter of CD drive to use (w/o colon). If not given first drive found will be used.");
-    parser.Var (g_sEncoding    , 'e', "encode"       , std::string{"sp"}, "Encoding for NetMD transfer. Default is 'sp'. MDLP modi (lp2, lp4) are only supported on SHARP IM-DR4x0, Sony MDS-JB980, Sony MDS-JB780.");
-    parser.Var (g_sXEncoding   , 'x', "ext-encode"   , std::string{"no"}, "External encoding for NetMD transfer. Default is 'no'. MDLP modi (lp2, lp4) are supported.");
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    size_t columns = 80;
+
+    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi))
+    {
+        columns = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    }
+
+    Flags parser(columns);
+    parser.Bool(g_bVerbose     , 'v', "verbose"      , "Does verbose output.");
+    parser.Bool(g_bHelp        , 'h', "help"         , "Prints help screen and exits program.");
+    parser.Bool(g_bNoMdDelete  , 'n', "no-delete"    , "Don't erase MD before writing (also MDs disc title will not be changed).");
+    parser.Bool(g_bNoCDDBLookup, 'i', "ignore-cddb"  , "Ignore CDDB lookup errors.");
+    parser.Var (g_cDrive       , 'd', "drive-letter" , '-'              , "Drive letter of CD drive to use (w/o colon). "
+                                                                          "If not given first CD drive found will be used.");
+
+    parser.Var (g_sEncoding    , 'e', "encode"       , std::string{"sp"}, "On-the-fly encoding mode on NetMD device while transfer. "
+                                                                          "Default is 'sp'. Note: MDLP (lp2, lp4) modi are only "
+                                                                          "supported on SHARP IM-DR4x0, Sony MDS-JB980, Sony MDS-JB780.");
+    
+    parser.Var (g_sXEncoding   , 'x', "ext-encode"   , std::string{"no"}, "External encoding for NetMD transfer. "
+                                                                          "Default is 'no'. MDLP modi (lp2, lp4) are supported. "
+                                                                          "Note: lp4 sounds horrible. Use it - if any - only for "
+                                                                          "audio books! In case your NetMD device supports On-the-fly "
+                                                                          "encoding, better use -e option instead!");
     
     if (!parser.Parse(argc, argv)) 
     {
