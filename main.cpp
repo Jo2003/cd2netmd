@@ -316,7 +316,7 @@ int externAtrac3Encode(const std::string& file)
             &pi )           // Pointer to PROCESS_INFORMATION structure
         ) 
         {
-            printf( "CreateProcess failed (%d).\n", GetLastError() );
+            std::cerr << "CreateProcess failed (" << GetLastError() << ")" << std::endl;
             err = -2;
         }
     
@@ -486,7 +486,7 @@ int toNetMD(NetMDCmds cmd, const std::string& file = "", const std::string& titl
             &pi )           // Pointer to PROCESS_INFORMATION structure
         ) 
         {
-            printf( "CreateProcess failed (%d).\n", GetLastError() );
+            std::cerr << "CreateProcess failed (" << GetLastError() << ")" << std::endl;
             err = -2;
         }
     
@@ -650,13 +650,13 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    ULONG TrackCount = AudioCD.GetTrackCount();
-    printf( "Track-Count: %i\n", TrackCount );
+    uint32_t TrackCount = AudioCD.GetTrackCount();
+    std::cout << "Track-Count: " << TrackCount << std::endl;
 
-    for ( ULONG i=0; i<TrackCount; i++ )
+    for ( uint32_t i=0; i<TrackCount; i++ )
     {
-        ULONG Time = AudioCD.GetTrackTime( i );
-        printf( "Track %i: %i:%.2i;  %i bytes\n", i+1, Time/60, Time%60, AudioCD.GetTrackSize(i) );
+        uint32_t Time = AudioCD.GetTrackTime( i );
+        printf( "Track %u: %u:%.2u;  %u bytes\n", i+1, Time/60, Time%60, static_cast<uint32_t>(AudioCD.GetTrackSize(i)) );
     }
     
     oss << "/~cddb/cddb.cgi?cmd=cddb+query+" << AudioCD.cddbQueryPart() << "&hello=me@you.org+localhost+MyRipper+0.0.1&proto=6";

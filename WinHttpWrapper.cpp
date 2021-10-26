@@ -6,7 +6,7 @@
 
 #include "WinHttpWrapper.h"
 #include <winhttp.h>
-#pragma comment(lib, "Winhttp.lib")
+// #pragma comment(lib, "Winhttp.lib")
 
 void WinHttpWrapper::HttpRequest::setup(const std::wstring& domain,
             int port,
@@ -274,8 +274,10 @@ bool WinHttpWrapper::HttpRequest::http(const std::wstring& verb, const std::wstr
                     // Check for available data.
                     dwSize = 0;
                     if (!WinHttpQueryDataAvailable(hRequest, &dwSize))
+                    {
                         error = L"Error in WinHttpQueryDataAvailable: ";
                         error += std::to_wstring(GetLastError());
+                    }
 
                     if (dwSize == 0)
                         break;
