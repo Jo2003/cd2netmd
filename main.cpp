@@ -59,13 +59,13 @@ typedef std::vector<STrackDescr> TrackVector_t;
 
 
 /// NetMD transfer thread
-std::mutex mtxTracks;       ///< synchronize access to track description vector
-TrackVector_t TracksDescr;  ///< track description vector
+std::mutex trf_mtxTracks;       ///< synchronize access to track description vector
+TrackVector_t trf_TracksDescr;  ///< track description vector
  
-std::mutex m;               ///< mutex for NetMD write thread synchronization
-std::condition_variable cv; ///< condition variable for NetMD write thread synchronization
-bool ready = false;         ///< synchronization helper
-bool complete = false;      ///< synchronization helper
+std::mutex trf_m;               ///< mutex for NetMD write thread synchronization
+std::condition_variable trf_cv; ///< condition variable for NetMD write thread synchronization
+bool trf_ready = false;         ///< synchronization helper
+bool trf_complete = false;      ///< synchronization helper
 
 /// external encoder thread
 std::mutex xenc_mtxTracks;       ///< synchronize access to track description vector
@@ -96,7 +96,7 @@ HANDLE g_hCDRip_stdout_rd    = INVALID_HANDLE_VALUE;
 /// run flag
 BOOL g_bRuns;
 
-/// state line helper
+/// status line helper
 int g_iNoTracks = 0;
 int g_iRipTrack = 0;
 int g_iEncTrack = 0;
@@ -160,6 +160,12 @@ int startExternalTool(const std::string cmdLine, HANDLE hdStdOut = INVALID_HANDL
         if (GetExitCodeProcess(pi.hProcess, &retCode))
         {
             iRet = static_cast<int>(retCode);
+        }
+
+        if ((iRet == 0) && (hdStdOut != INVALID_HANDLE_VALUE))
+        {
+            // fake 100%
+            WriteFile(hdStdOut, " 100% \n", 7, nullptr, nullptr);
         }
     }
 
@@ -293,7 +299,7 @@ std::string parseCddbResultsEx(const std::string& input)
             std::cout << "=======================" << std::endl;
             for(const auto& d : choices)
             {
-                std::cout << no << ") (" << d.mQuery << ") " << d.mDescr << std::endl;
+                std::cout << std::setw(2) << std::right << no << std::left << ") (" << d.mQuery << ") " << d.mDescr << std::endl;
                 no++;
             }
             std::cout << "Please choose the entry number to use: ";
@@ -303,6 +309,7 @@ std::string parseCddbResultsEx(const std::string& input)
             {
                 ret = choices.at(no - 1).mQuery;
             }
+            std::cout << std::endl;
         }
     }
 
@@ -571,38 +578,33 @@ int tfunc_mdwrite()
     
     do
     {
-        mtxTracks.lock();
-        if (TracksDescr.size() > 0)
+        trf_mtxTracks.lock();
+        if (trf_TracksDescr.size() > 0)
         {
-            currJob = TracksDescr[0];
-            TracksDescr.erase(TracksDescr.begin());
+            currJob = trf_TracksDescr[0];
+            trf_TracksDescr.erase(trf_TracksDescr.begin());
         }
         else
         {
             currJob = {"", ""};
-            if (complete)
+            if (trf_complete)
             {
                 go = false;
             }
         }
-        mtxTracks.unlock();
+        trf_mtxTracks.unlock();
         
         if (!currJob.mFile.empty())
         {
-            if (g_sXEncoding != "no")
-            {
-                g_iEncTrack ++;
-                externAtrac3Encode(currJob.mFile);
-            }
             g_iTrfTrack ++;
             toNetMD(wrtCmd, currJob.mFile, currJob.mName);
             if (!g_bVerbose) _unlink(currJob.mFile.c_str());
         }
         else if (go)
         {
-            std::unique_lock<std::mutex> lk(m);
-            cv.wait(lk, []{return ready;});
-            ready = false;
+            std::unique_lock<std::mutex> lk(trf_m);
+            trf_cv.wait(lk, []{return trf_ready;});
+            trf_ready = false;
         }
     }
     while(go);
@@ -611,14 +613,14 @@ int tfunc_mdwrite()
 }
 
 //------------------------------------------------------------------------------
-//! @brief      thread function for netmd transfer
+//! @brief      thread function for external encoder
 //!
 //! @return     0
 //------------------------------------------------------------------------------
 int tfunc_xencode()
 {
     STrackDescr currJob;
-    bool        go     = true;
+    bool        go = true;
 
     do
     {
@@ -645,6 +647,17 @@ int tfunc_xencode()
                 g_iEncTrack ++;
                 externAtrac3Encode(currJob.mFile);
             }
+            
+            trf_mtxTracks.lock();
+            trf_TracksDescr.push_back(currJob);
+            trf_mtxTracks.unlock();
+
+            // notify md write thread
+            {
+                std::lock_guard<std::mutex> lk(trf_m);
+                trf_ready = true;
+            }
+            trf_cv.notify_one();
         }
         else if (go)
         {
@@ -654,10 +667,24 @@ int tfunc_xencode()
         }
     }
     while(go);
+
+    trf_complete = true;
+    {
+        std::lock_guard<std::mutex> lk(trf_m);
+        trf_ready = true;
+    }
+    trf_cv.notify_one();
     
     return 0;
 }
 
+//------------------------------------------------------------------------------
+//! @brief      extract percent value from token
+//!
+//! @param[in]  tok   token to parse
+//!
+//! @return     -1 -> no value found; > -1 -> percent value
+//------------------------------------------------------------------------------
 int extractPercent(const std::string& tok)
 {
     std::size_t posPercent, posNoNumber;
@@ -679,24 +706,37 @@ int extractPercent(const std::string& tok)
     return percent;
 }
 
+//------------------------------------------------------------------------------
+//! @brief      Makes a status bar.
+//!
+//! @param[in]  rip   The rip %
+//! @param[in]  enc   The encode %
+//! @param[in]  trf   The transfer %
+//------------------------------------------------------------------------------
 void makeStatusBar(int rip, int enc, int trf)
 {
     std::string srip, senc, strf;
     std::ostringstream oss;
 
-    oss << std::setw(3) << g_iRipTrack << " / " << std::setw(3) << std::left << g_iNoTracks << std::right << std::setw(4) << rip << "%";
+    oss << std::setw(3) << g_iRipTrack << " / " << std::setw(3) 
+        << std::left << g_iNoTracks << std::right << std::setw(4) 
+        << rip << "%";
     srip = oss.str();
 
     oss.clear();
     oss.str("");
 
-    oss << std::setw(3) << g_iEncTrack << " / " << std::setw(3) << std::left << g_iNoTracks << std::right << std::setw(4) << enc << "%";
+    oss << std::setw(3) << g_iEncTrack << " / " << std::setw(3) 
+        << std::left << g_iNoTracks << std::right << std::setw(4) 
+        << enc << "%";
     senc = oss.str();
 
     oss.clear();
     oss.str("");
 
-    oss << std::setw(3) << g_iTrfTrack << " / " << std::setw(3) << std::left << g_iNoTracks << std::right << std::setw(4) << trf << "%";
+    oss << std::setw(3) << g_iTrfTrack << " / " << std::setw(3) 
+        << std::left << g_iNoTracks << std::right << std::setw(4) 
+        << trf << "%";
     strf = oss.str();
 
     oss.clear();
@@ -712,6 +752,11 @@ void makeStatusBar(int rip, int enc, int trf)
     std::cout << "[ MD Transfer: " << strf << " ] " << std::flush;
 }
 
+//------------------------------------------------------------------------------
+//! @brief      parse processes stdout pipes for status update
+//!
+//! @return     0
+//------------------------------------------------------------------------------
 int tfunc_readPipes()
 {
     char buffNetMD[4096];
@@ -782,6 +827,78 @@ int tfunc_readPipes()
 }
 
 //------------------------------------------------------------------------------
+//! @brief      Opens pipes.
+//!
+//! @return     0 -> ok; -1 -> error
+//------------------------------------------------------------------------------
+int openPipes()
+{
+    int ret = 0;
+    SECURITY_ATTRIBUTES saAttr; 
+
+    saAttr.nLength = sizeof(SECURITY_ATTRIBUTES); 
+    saAttr.bInheritHandle = TRUE; 
+    saAttr.lpSecurityDescriptor = NULL; 
+
+    // Create a pipe for the child process's STDOUT. 
+    DWORD dwWait = PIPE_NOWAIT; ///< non blocking on read side
+    CreatePipe(&g_hNetMDCli_stdout_rd, &g_hNetMDCli_stdout_wr, &saAttr, 4096);
+    SetHandleInformation(g_hNetMDCli_stdout_rd, HANDLE_FLAG_INHERIT, 0);
+    SetNamedPipeHandleState(g_hNetMDCli_stdout_rd, &dwWait, nullptr, nullptr);
+
+    CreatePipe(&g_hAtracEnc_stdout_rd, &g_hAtracEnc_stdout_wr, &saAttr, 4096);
+    SetHandleInformation(g_hAtracEnc_stdout_rd, HANDLE_FLAG_INHERIT, 0);
+    SetNamedPipeHandleState(g_hAtracEnc_stdout_rd, &dwWait, nullptr, nullptr);
+
+    CreatePipe(&g_hCDRip_stdout_rd, &g_hCDRip_stdout_wr, &saAttr, 4096);
+    SetHandleInformation(g_hCDRip_stdout_rd, HANDLE_FLAG_INHERIT, 0);
+    SetNamedPipeHandleState(g_hCDRip_stdout_rd, &dwWait, nullptr, nullptr);
+
+    if ((g_hNetMDCli_stdout_wr == INVALID_HANDLE_VALUE)
+        || (g_hNetMDCli_stdout_rd == INVALID_HANDLE_VALUE)
+        || (g_hAtracEnc_stdout_wr == INVALID_HANDLE_VALUE)
+        || (g_hAtracEnc_stdout_rd == INVALID_HANDLE_VALUE)
+        || (g_hCDRip_stdout_wr == INVALID_HANDLE_VALUE)
+        || (g_hCDRip_stdout_rd == INVALID_HANDLE_VALUE))
+    {
+        ret = -1;
+    } 
+
+    return ret;
+}
+
+//------------------------------------------------------------------------------
+//! @brief      Closes pipes.
+//------------------------------------------------------------------------------
+void closePipes()
+{
+    if (g_hNetMDCli_stdout_wr != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_hNetMDCli_stdout_wr);
+    } 
+    if (g_hNetMDCli_stdout_rd != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_hNetMDCli_stdout_rd);
+    } 
+    if (g_hAtracEnc_stdout_wr != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_hAtracEnc_stdout_wr);
+    } 
+    if (g_hAtracEnc_stdout_rd != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_hAtracEnc_stdout_rd);
+    } 
+    if (g_hCDRip_stdout_wr != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_hCDRip_stdout_wr);
+    } 
+    if (g_hCDRip_stdout_rd != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_hCDRip_stdout_rd);
+    } 
+}
+
+//------------------------------------------------------------------------------
 //! @brief      program entry point
 //!
 //! @param[in]  argc  The count of arguments
@@ -817,7 +934,7 @@ int main(int argc, char** argv)
                                                                           "Note: lp4 sounds horrible. Use it - if any - only for "
                                                                           "audio books! In case your NetMD device supports On-the-fly "
                                                                           "encoding, better use -e option instead!");
-    
+
     if (!parser.Parse(argc, argv)) 
     {
         parser.PrintHelp(argv[0]);
@@ -859,28 +976,15 @@ int main(int argc, char** argv)
         oss.str("");
     }
 
-    SECURITY_ATTRIBUTES saAttr; 
+    if (openPipes() != 0)
+    {
+        closePipes();
+        std::cerr << "Can't open pipes!" << std::endl;
+        return -1;
+    }
 
-    saAttr.nLength = sizeof(SECURITY_ATTRIBUTES); 
-    saAttr.bInheritHandle = TRUE; 
-    saAttr.lpSecurityDescriptor = NULL; 
-
-    // Create a pipe for the child process's STDOUT. 
-    DWORD dwWait = PIPE_NOWAIT; ///< non blocking on read side
-    CreatePipe(&g_hNetMDCli_stdout_rd, &g_hNetMDCli_stdout_wr, &saAttr, 4096);
-    SetHandleInformation(g_hNetMDCli_stdout_rd, HANDLE_FLAG_INHERIT, 0);
-    SetNamedPipeHandleState(g_hNetMDCli_stdout_rd, &dwWait, nullptr, nullptr);
-
-    CreatePipe(&g_hAtracEnc_stdout_rd, &g_hAtracEnc_stdout_wr, &saAttr, 4096);
-    SetHandleInformation(g_hAtracEnc_stdout_rd, HANDLE_FLAG_INHERIT, 0);
-    SetNamedPipeHandleState(g_hAtracEnc_stdout_rd, &dwWait, nullptr, nullptr);
-
-    CreatePipe(&g_hCDRip_stdout_rd, &g_hCDRip_stdout_wr, &saAttr, 4096);
-    SetHandleInformation(g_hCDRip_stdout_rd, HANDLE_FLAG_INHERIT, 0);
-    SetNamedPipeHandleState(g_hCDRip_stdout_rd, &dwWait, nullptr, nullptr);
-
+    // ostream device for Audio CD cout piping ...
     CPipeStream ps(g_hCDRip_stdout_wr);
-
 
     // Set console code page to UTF-8 so console known how to interpret string data
     SetConsoleOutputCP(CP_UTF8);
@@ -938,6 +1042,7 @@ int main(int argc, char** argv)
         {
             toNetMD(NetMDCmds::ERASE_DISC);
             toNetMD(NetMDCmds::DISC_TITLE, "", tracks.empty() ? "" : tracks.at(0));
+            WriteFile(g_hNetMDCli_stdout_wr, " 0% \n", 5, nullptr, nullptr);
         }
         
         char fname[MAX_PATH];
@@ -945,6 +1050,7 @@ int main(int argc, char** argv)
         g_bRuns = TRUE;
         
         std::thread PipeWatch(tfunc_readPipes);
+        std::thread XEnc(tfunc_xencode);
         std::thread NetMd(tfunc_mdwrite);
         
         for (UINT i = 0; i < TrackCount; i++)
@@ -956,26 +1062,28 @@ int main(int argc, char** argv)
 
             AudioCD.ExtractTrack(i, fname);
             
-            mtxTracks.lock();
-            TracksDescr.push_back({(tracks.empty() ? "" : tracks.at(i+1)), fname});
-            mtxTracks.unlock();
+            xenc_mtxTracks.lock();
+            xenc_TracksDescr.push_back({(tracks.empty() ? "" : tracks.at(i+1)), fname});
+            xenc_mtxTracks.unlock();
             
             // notify md write thread
             {
-                std::lock_guard<std::mutex> lk(m);
-                ready = true;
+                std::lock_guard<std::mutex> lk(xenc_m);
+                xenc_ready = true;
             }
-            cv.notify_one();
+            xenc_cv.notify_one();
         }
         
         AudioCD.EjectCD();
         
-        complete = true;
+        xenc_complete = true;
         {
-            std::lock_guard<std::mutex> lk(m);
-            ready = true;
+            std::lock_guard<std::mutex> lk(xenc_m);
+            xenc_ready = true;
         }
-        cv.notify_one();
+        xenc_cv.notify_one();
+
+        XEnc.join();
         
         // wait for md writing ends
         NetMd.join();
@@ -985,30 +1093,7 @@ int main(int argc, char** argv)
         PipeWatch.join();
     }
 
-    if (g_hNetMDCli_stdout_wr != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(g_hNetMDCli_stdout_wr);
-    } 
-    if (g_hNetMDCli_stdout_rd != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(g_hNetMDCli_stdout_rd);
-    } 
-    if (g_hAtracEnc_stdout_wr != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(g_hAtracEnc_stdout_wr);
-    } 
-    if (g_hAtracEnc_stdout_rd != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(g_hAtracEnc_stdout_rd);
-    } 
-    if (g_hCDRip_stdout_wr != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(g_hCDRip_stdout_wr);
-    } 
-    if (g_hCDRip_stdout_rd != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(g_hCDRip_stdout_rd);
-    } 
+    closePipes();
 
     return 0;
 }
