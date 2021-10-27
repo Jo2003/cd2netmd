@@ -14,6 +14,7 @@
 #include <windows.h>
 #include <vector>
 #include <string>
+#include <iostream>
 #include "CBuf.h"
 #include "AudioCD_Helpers.h"
 
@@ -40,12 +41,14 @@ struct CDTRACK
 // AudioCD.ExtractTrack( 7, "C:\\MyTrack.wav" );
 class CAudioCD
 {
+    std::ostream& mOs;
+
     public:
         // CONSTRUCTOR / DESTRUCTOR
 
         // Initializes the class. If you specify a letter for
         //   'Drive', it acts like a call to "Open".
-        CAudioCD( char Drive='\0' );
+        CAudioCD( char Drive='\0', std::ostream& os = std::cout );
 
         // Destructs the class, acts like a call to "Close".
         ~CAudioCD();

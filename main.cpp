@@ -1,10 +1,14 @@
 #include <cctype>
+#include <cstddef>
 #include <cstdio>
 #include <fileapi.h>
 #include <handleapi.h>
+#include <sstream>
+#include <fstream>
 #include <ostream>
 #include <string>
 #include <iostream>
+#include <iomanip>
 #include <sstream>
 #include <mutex>
 #include <thread>
@@ -14,10 +18,12 @@
 #include <tchar.h>
 #include <sys/types.h>
 #include <algorithm>
-#include <winnt.h>
+// #include <winnt.h>
+#include <io.h>
 #include "WinHttpWrapper.h"
 #include "CAudioCD.h"
 #include "Flags.hh"
+#include "CPipeStream.hpp"
 
 /// tool chain path
 static constexpr const char* TOOLCHAIN_PATH = "toolchain/";
@@ -52,7 +58,7 @@ struct STrackDescr
 typedef std::vector<STrackDescr> TrackVector_t;
 
 
-/// global variables
+/// NetMD transfer thread
 std::mutex mtxTracks;       ///< synchronize access to track description vector
 TrackVector_t TracksDescr;  ///< track description vector
  
@@ -60,6 +66,15 @@ std::mutex m;               ///< mutex for NetMD write thread synchronization
 std::condition_variable cv; ///< condition variable for NetMD write thread synchronization
 bool ready = false;         ///< synchronization helper
 bool complete = false;      ///< synchronization helper
+
+/// external encoder thread
+std::mutex xenc_mtxTracks;       ///< synchronize access to track description vector
+TrackVector_t xenc_TracksDescr;  ///< track description vector
+ 
+std::mutex xenc_m;               ///< mutex for NetMD write thread synchronization
+std::condition_variable xenc_cv; ///< condition variable for NetMD write thread synchronization
+bool xenc_ready = false;         ///< synchronization helper
+bool xenc_complete = false;      ///< synchronization helper
 
 /// cmd line parameters
 bool        g_bVerbose;     ///< do verbose output if set
@@ -69,6 +84,93 @@ bool        g_bNoCDDBLookup;///< don't use CDDB lookup
 char        g_cDrive;       ///< drive letter of CD drive
 std::string g_sEncoding;    ///< NetMD encoding
 std::string g_sXEncoding;   ///< NetMD external encoding
+
+/// stdout handle for piping of external tools' output
+HANDLE g_hNetMDCli_stdout_wr = INVALID_HANDLE_VALUE;
+HANDLE g_hNetMDCli_stdout_rd = INVALID_HANDLE_VALUE;
+HANDLE g_hAtracEnc_stdout_wr = INVALID_HANDLE_VALUE;
+HANDLE g_hAtracEnc_stdout_rd = INVALID_HANDLE_VALUE;
+HANDLE g_hCDRip_stdout_wr    = INVALID_HANDLE_VALUE;
+HANDLE g_hCDRip_stdout_rd    = INVALID_HANDLE_VALUE;
+
+/// run flag
+BOOL g_bRuns;
+
+/// state line helper
+int g_iNoTracks = 0;
+int g_iRipTrack = 0;
+int g_iEncTrack = 0;
+int g_iTrfTrack = 0;
+
+//------------------------------------------------------------------------------
+//! @brief      Starts an external tool.
+//!
+//! @param[in]  cmdLine   The command line
+//! @param[in]  hdStdOut  The standard out handle (optional)
+//!
+//! @return     0 -> ok; else -> error
+//------------------------------------------------------------------------------
+int startExternalTool(const std::string cmdLine, HANDLE hdStdOut = INVALID_HANDLE_VALUE)
+{
+    int iRet = 0;
+    VERBOSE(std::cout << "Running command: " << cmdLine << std::endl);
+    char* pCmd = new char[cmdLine.size() + 1];
+
+    strcpy(pCmd, cmdLine.c_str());
+    
+    STARTUPINFO si;
+    PROCESS_INFORMATION pi;
+
+    ZeroMemory( &si, sizeof(si) );
+    si.cb = sizeof(si);
+    ZeroMemory( &pi, sizeof(pi) );
+
+    if (hdStdOut != INVALID_HANDLE_VALUE)
+    {
+        si.hStdError  = hdStdOut;
+        si.hStdOutput = hdStdOut;
+        si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+        si.dwFlags   |= STARTF_USESTDHANDLES;
+    }
+
+    // Start the child process. 
+    if( !CreateProcess( NULL,   // No module name (use command line)
+        pCmd,           // Command line
+        NULL,           // Process handle not inheritable
+        NULL,           // Thread handle not inheritable
+        TRUE,           // Set handle inheritance to TRUE
+        0,              // No creation flags
+        NULL,           // Use parent's environment block
+        NULL,           // Use parent's starting directory 
+        &si,            // Pointer to STARTUPINFO structure
+        &pi )           // Pointer to PROCESS_INFORMATION structure
+    ) 
+    {
+        std::cerr << "CreateProcess failed (" << GetLastError() << ")" << std::endl;
+        iRet = -1;
+    }
+
+    // Wait until child process exits.
+    WaitForSingleObject( pi.hProcess, INFINITE );
+
+    if (iRet == 0)
+    {
+        // get return code
+        DWORD retCode = 0;
+        if (GetExitCodeProcess(pi.hProcess, &retCode))
+        {
+            iRet = static_cast<int>(retCode);
+        }
+    }
+
+    // Close process and thread handles. 
+    CloseHandle( pi.hProcess );
+    CloseHandle( pi.hThread );
+    
+    delete [] pCmd;
+
+    return iRet;
+}
 
 //------------------------------------------------------------------------------
 //! @brief      convert std::string to std::wstring
@@ -292,127 +394,94 @@ int externAtrac3Encode(const std::string& file)
     if (err == 0)
     {
         cmdLine << " -i \"" << file << "\" -o \"" << atracFile << "\"";
-        VERBOSE(std::cout << "Running command: " << cmdLine.str() << std::endl);
-        char* pCmd = new char[cmdLine.str().size() + 1];
-        strcpy(pCmd, cmdLine.str().c_str());
-        
-        STARTUPINFO si;
-        PROCESS_INFORMATION pi;
-    
-        ZeroMemory( &si, sizeof(si) );
-        si.cb = sizeof(si);
-        ZeroMemory( &pi, sizeof(pi) );
-
-        // Start the child process. 
-        if( !CreateProcess( NULL,   // No module name (use command line)
-            pCmd,           // Command line
-            NULL,           // Process handle not inheritable
-            NULL,           // Thread handle not inheritable
-            FALSE,          // Set handle inheritance to FALSE
-            0,              // No creation flags
-            NULL,           // Use parent's environment block
-            NULL,           // Use parent's starting directory 
-            &si,            // Pointer to STARTUPINFO structure
-            &pi )           // Pointer to PROCESS_INFORMATION structure
-        ) 
+        if ((err = startExternalTool(cmdLine.str(), g_hAtracEnc_stdout_wr)) == 0)
         {
-            std::cerr << "CreateProcess failed (" << GetLastError() << ")" << std::endl;
-            err = -2;
-        }
-    
-        // Wait until child process exits.
-        WaitForSingleObject( pi.hProcess, INFINITE );
-    
-        // Close process and thread handles. 
-        CloseHandle( pi.hProcess );
-        CloseHandle( pi.hThread );
-        
-        delete [] pCmd;
+            // open atrac file for size check
+            HANDLE hAtrac = CreateFileA(atracFile.c_str(), GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
-        // open atrac file for size check
-        HANDLE hAtrac = CreateFileA(atracFile.c_str(), GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            DWORD sz = 0;
 
-        DWORD sz = 0;
-
-        if (hAtrac != INVALID_HANDLE_VALUE)
-        {
-            // get file size
-            sz = GetFileSize(hAtrac, nullptr) - ATRAC3_HEADER_SIZE;
-
-            FILE *fWave = fopen(file.c_str(), "wb");
-    
-            if (fWave != nullptr)
+            if (hAtrac != INVALID_HANDLE_VALUE)
             {
-                std::cout << "Wrap Atrac3 file ... " << std::flush;
+                // get file size
+                sz = GetFileSize(hAtrac, nullptr) - ATRAC3_HEADER_SIZE;
 
-                // heavily inspired by atrac3tool and completed through
-                // reverse engineering of ffmpeg output ...
-                char dstFormatBuf[0x20];
-                WAVEFORMATEX *pDstFormat = (WAVEFORMATEX *)dstFormatBuf;
-                pDstFormat->wFormatTag = WAVE_FORMAT_SONY_SCX;
-                pDstFormat->nChannels = 2;
-                pDstFormat->nSamplesPerSec = 44100;
-                if (mode == NetMDCmds::WRITE_TRACK_LP2)
+                FILE *fWave = fopen(file.c_str(), "wb");
+        
+                if (fWave != nullptr)
                 {
-                    pDstFormat->nAvgBytesPerSec = 16537;
-                    pDstFormat->nBlockAlign = 0x180;
-                    memcpy(&dstFormatBuf[0x12], "\x01\x00\x44\xAC\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00", 0xE);
-                }
-                else if (mode == NetMDCmds::WRITE_TRACK_LP4)
-                {
-                    pDstFormat->nAvgBytesPerSec = 8268;
-                    pDstFormat->nBlockAlign = 0xc0;
-                    memcpy(&dstFormatBuf[0x12], "\x01\x00\x44\xAC\x00\x00\x01\x00\x01\x00\x01\x00\x00\x00", 0xE);
-                }
-                
-                pDstFormat->wBitsPerSample = 0;
-                pDstFormat->cbSize = 0xE;
-
-                DWORD written = 0, read = 0, copied = 0;
-
-                DWORD32 i = 0xC + 8 + 0x20 + 8 + sz - 8;
-
-                fwrite("RIFF", 1, 4, fWave);
-                fwrite(&i, 4, 1, fWave);
-                fwrite("WAVE", 1, 4, fWave);
-
-                fwrite("fmt ", 1, 4, fWave);
-                i = 0x20;
-                fwrite(&i, 4, 1, fWave);
-                fwrite(dstFormatBuf, 1, 0x20, fWave);
-
-                fwrite("data", 1, 4, fWave);
-                i = sz;
-                fwrite(&i, 4, 1, fWave);
-
-                unsigned char buff[16'384];
-
-                // drop atrac 3 header
-                ReadFile(hAtrac, buff, ATRAC3_HEADER_SIZE, &read, NULL);
-
-                // copy atrac file to wave file
-                do
-                {
-                    // read 16k at once
-                    ReadFile(hAtrac, buff, 16'384, &read, NULL);
-
-                    written = 0;
-
-                    while(written < read)
+                    // heavily inspired by atrac3tool and completed through
+                    // reverse engineering of ffmpeg output ...
+                    char dstFormatBuf[0x20];
+                    WAVEFORMATEX *pDstFormat = (WAVEFORMATEX *)dstFormatBuf;
+                    pDstFormat->wFormatTag = WAVE_FORMAT_SONY_SCX;
+                    pDstFormat->nChannels = 2;
+                    pDstFormat->nSamplesPerSec = 44100;
+                    if (mode == NetMDCmds::WRITE_TRACK_LP2)
                     {
-                        written += fwrite(&buff[written], 1, read - written, fWave);
+                        pDstFormat->nAvgBytesPerSec = 16537;
+                        pDstFormat->nBlockAlign = 0x180;
+                        memcpy(&dstFormatBuf[0x12], "\x01\x00\x44\xAC\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00", 0xE);
                     }
-                    copied += written;
+                    else if (mode == NetMDCmds::WRITE_TRACK_LP4)
+                    {
+                        pDstFormat->nAvgBytesPerSec = 8268;
+                        pDstFormat->nBlockAlign = 0xc0;
+                        memcpy(&dstFormatBuf[0x12], "\x01\x00\x44\xAC\x00\x00\x01\x00\x01\x00\x01\x00\x00\x00", 0xE);
+                    }
+                    
+                    pDstFormat->wBitsPerSample = 0;
+                    pDstFormat->cbSize = 0xE;
+
+                    DWORD written = 0, read = 0, copied = 0;
+
+                    DWORD32 i = 0xC + 8 + 0x20 + 8 + sz - 8;
+
+                    fwrite("RIFF", 1, 4, fWave);
+                    fwrite(&i, 4, 1, fWave);
+                    fwrite("WAVE", 1, 4, fWave);
+
+                    fwrite("fmt ", 1, 4, fWave);
+                    i = 0x20;
+                    fwrite(&i, 4, 1, fWave);
+                    fwrite(dstFormatBuf, 1, 0x20, fWave);
+
+                    fwrite("data", 1, 4, fWave);
+                    i = sz;
+                    fwrite(&i, 4, 1, fWave);
+
+                    unsigned char buff[16'384];
+
+                    // drop atrac 3 header
+                    ReadFile(hAtrac, buff, ATRAC3_HEADER_SIZE, &read, NULL);
+
+                    // copy atrac file to wave file
+                    do
+                    {
+                        // read 16k at once
+                        ReadFile(hAtrac, buff, 16'384, &read, NULL);
+
+                        written = 0;
+
+                        while(written < read)
+                        {
+                            written += fwrite(&buff[written], 1, read - written, fWave);
+                        }
+                        copied += written;
+                    }
+                    while(copied < sz);
+
+                    VERBOSE(std::cout << "Wrap Atrac3 file ... done!" << std::endl);
+                    fclose(fWave);
                 }
-                while(copied < sz);
 
-                std::cout << " done!" << std::endl;
-                
-                fclose(fWave);
+                CloseHandle(hAtrac);
+                if (!g_bVerbose) _unlink(atracFile.c_str());
             }
-
-            CloseHandle(hAtrac);
-            if (!g_bVerbose) _unlink(atracFile.c_str());
+        }
+        else
+        {
+            std::cerr << "Error running '" << cmdLine.str() << "'!" << std::endl;
         }
     }
     return err;
@@ -462,42 +531,10 @@ int toNetMD(NetMDCmds cmd, const std::string& file = "", const std::string& titl
     
     if (err == 0)
     {
-        VERBOSE(std::cout << "Running command: " << cmdLine.str() << std::endl);
-        char* pCmd = new char[cmdLine.str().size() + 1];
-        strcpy(pCmd, cmdLine.str().c_str());
-        
-        STARTUPINFO si;
-        PROCESS_INFORMATION pi;
-    
-        ZeroMemory( &si, sizeof(si) );
-        si.cb = sizeof(si);
-        ZeroMemory( &pi, sizeof(pi) );
-
-        // Start the child process. 
-        if( !CreateProcess( NULL,   // No module name (use command line)
-            pCmd,           // Command line
-            NULL,           // Process handle not inheritable
-            NULL,           // Thread handle not inheritable
-            FALSE,          // Set handle inheritance to FALSE
-            0,              // No creation flags
-            NULL,           // Use parent's environment block
-            NULL,           // Use parent's starting directory 
-            &si,            // Pointer to STARTUPINFO structure
-            &pi )           // Pointer to PROCESS_INFORMATION structure
-        ) 
+        if ((err = startExternalTool(cmdLine.str(), g_hNetMDCli_stdout_wr)) != 0)
         {
-            std::cerr << "CreateProcess failed (" << GetLastError() << ")" << std::endl;
-            err = -2;
+            std::cerr << "Error running '" << cmdLine.str() << "'!" << std::endl;
         }
-    
-        // Wait until child process exits.
-        WaitForSingleObject( pi.hProcess, INFINITE );
-    
-        // Close process and thread handles. 
-        CloseHandle( pi.hProcess );
-        CloseHandle( pi.hThread );
-        
-        delete [] pCmd;
     }
     
     return err;
@@ -554,8 +591,10 @@ int tfunc_mdwrite()
         {
             if (g_sXEncoding != "no")
             {
+                g_iEncTrack ++;
                 externAtrac3Encode(currJob.mFile);
             }
+            g_iTrfTrack ++;
             toNetMD(wrtCmd, currJob.mFile, currJob.mName);
             if (!g_bVerbose) _unlink(currJob.mFile.c_str());
         }
@@ -568,6 +607,177 @@ int tfunc_mdwrite()
     }
     while(go);
     
+    return 0;
+}
+
+//------------------------------------------------------------------------------
+//! @brief      thread function for netmd transfer
+//!
+//! @return     0
+//------------------------------------------------------------------------------
+int tfunc_xencode()
+{
+    STrackDescr currJob;
+    bool        go     = true;
+
+    do
+    {
+        xenc_mtxTracks.lock();
+        if (xenc_TracksDescr.size() > 0)
+        {
+            currJob = xenc_TracksDescr[0];
+            xenc_TracksDescr.erase(xenc_TracksDescr.begin());
+        }
+        else
+        {
+            currJob = {"", ""};
+            if (xenc_complete)
+            {
+                go = false;
+            }
+        }
+        xenc_mtxTracks.unlock();
+        
+        if (!currJob.mFile.empty())
+        {
+            if (g_sXEncoding != "no")
+            {
+                g_iEncTrack ++;
+                externAtrac3Encode(currJob.mFile);
+            }
+        }
+        else if (go)
+        {
+            std::unique_lock<std::mutex> lk(xenc_m);
+            xenc_cv.wait(lk, []{return xenc_ready;});
+            xenc_ready = false;
+        }
+    }
+    while(go);
+    
+    return 0;
+}
+
+int extractPercent(const std::string& tok)
+{
+    std::size_t posPercent, posNoNumber;
+    int percent = -1;
+
+    if ((posPercent = tok.rfind('%')) != std::string::npos)
+    {
+        if ((posNoNumber = tok.find_last_not_of("0123456789", posPercent - 1)) != std::string::npos)
+        {
+            percent = std::stoi(tok.substr(posNoNumber + 1));
+        }
+        else
+        {
+            percent = std::stoi(tok.substr(0));
+        }
+        
+    }
+
+    return percent;
+}
+
+void makeStatusBar(int rip, int enc, int trf)
+{
+    std::string srip, senc, strf;
+    std::ostringstream oss;
+
+    oss << std::setw(3) << g_iRipTrack << " / " << std::setw(3) << std::left << g_iNoTracks << std::right << std::setw(4) << rip << "%";
+    srip = oss.str();
+
+    oss.clear();
+    oss.str("");
+
+    oss << std::setw(3) << g_iEncTrack << " / " << std::setw(3) << std::left << g_iNoTracks << std::right << std::setw(4) << enc << "%";
+    senc = oss.str();
+
+    oss.clear();
+    oss.str("");
+
+    oss << std::setw(3) << g_iTrfTrack << " / " << std::setw(3) << std::left << g_iNoTracks << std::right << std::setw(4) << trf << "%";
+    strf = oss.str();
+
+    oss.clear();
+    oss.str("");
+
+    std::cout << "\r[ CD-Rip: " << srip << " ] ";
+
+    if (g_sXEncoding != "no")
+    {
+        std::cout << "[ X-Encode: " << senc << " ] ";
+    }
+
+    std::cout << "[ MD Transfer: " << strf << " ] " << std::flush;
+}
+
+int tfunc_readPipes()
+{
+    char buffNetMD[4096];
+    char buffAtracEnc[4096];
+    char buffCDRip[4096];
+    DWORD readNetMD    = 0;
+    DWORD readAtracEnc = 0;
+    DWORD readCDRip    = 0;
+    std::string tok;
+    int percent;
+    
+    int rip  = 0, enc  = 0, trf  = 0;
+    int rip_ = 0, enc_ = 0, trf_ = 0;
+    
+    while(g_bRuns)
+    {
+        if (ReadFile(g_hNetMDCli_stdout_rd, buffNetMD, 4095, &readNetMD, 0))
+        {
+            if (readNetMD > 0)
+            {
+                buffNetMD[readNetMD] = '\0';
+                tok                  = buffNetMD;
+
+                if ((percent = extractPercent(tok)) != -1)
+                {
+                    trf = percent;
+                }
+            }
+        }
+
+        if (ReadFile(g_hAtracEnc_stdout_rd, buffAtracEnc, 4095, &readAtracEnc, 0))
+        {
+            if (readAtracEnc > 0)
+            {
+                buffAtracEnc[readAtracEnc] = '\0';
+                tok                        = buffAtracEnc;
+                if ((percent = extractPercent(tok)) != -1)
+                {
+                    enc = percent;
+                }
+            }
+        }
+
+        if (ReadFile(g_hCDRip_stdout_rd, buffCDRip, 4095, &readCDRip, 0))
+        {
+            if (readCDRip > 0)
+            {
+                buffCDRip[readCDRip] = '\0';
+                tok                  = buffCDRip;
+                if ((percent = extractPercent(tok)) != -1)
+                {
+                    rip = percent;
+                }
+            }
+        }
+
+        if ((rip != rip_) || (enc != enc_) || (trf != trf_))
+        {
+            makeStatusBar(rip, enc, trf);
+            rip_ = rip;
+            enc_ = enc;
+            trf_ = trf;
+        }
+
+        Sleep(1);
+    }
     return 0;
 }
 
@@ -649,6 +859,29 @@ int main(int argc, char** argv)
         oss.str("");
     }
 
+    SECURITY_ATTRIBUTES saAttr; 
+
+    saAttr.nLength = sizeof(SECURITY_ATTRIBUTES); 
+    saAttr.bInheritHandle = TRUE; 
+    saAttr.lpSecurityDescriptor = NULL; 
+
+    // Create a pipe for the child process's STDOUT. 
+    DWORD dwWait = PIPE_NOWAIT; ///< non blocking on read side
+    CreatePipe(&g_hNetMDCli_stdout_rd, &g_hNetMDCli_stdout_wr, &saAttr, 4096);
+    SetHandleInformation(g_hNetMDCli_stdout_rd, HANDLE_FLAG_INHERIT, 0);
+    SetNamedPipeHandleState(g_hNetMDCli_stdout_rd, &dwWait, nullptr, nullptr);
+
+    CreatePipe(&g_hAtracEnc_stdout_rd, &g_hAtracEnc_stdout_wr, &saAttr, 4096);
+    SetHandleInformation(g_hAtracEnc_stdout_rd, HANDLE_FLAG_INHERIT, 0);
+    SetNamedPipeHandleState(g_hAtracEnc_stdout_rd, &dwWait, nullptr, nullptr);
+
+    CreatePipe(&g_hCDRip_stdout_rd, &g_hCDRip_stdout_wr, &saAttr, 4096);
+    SetHandleInformation(g_hCDRip_stdout_rd, HANDLE_FLAG_INHERIT, 0);
+    SetNamedPipeHandleState(g_hCDRip_stdout_rd, &dwWait, nullptr, nullptr);
+
+    CPipeStream ps(g_hCDRip_stdout_wr);
+
+
     // Set console code page to UTF-8 so console known how to interpret string data
     SetConsoleOutputCP(CP_UTF8);
 
@@ -660,7 +893,7 @@ int main(int argc, char** argv)
     
     std::vector<std::string> tracks;
     
-    CAudioCD AudioCD;
+    CAudioCD AudioCD('\0', ps);
     if ( ! AudioCD.Open( g_cDrive ) )
     {
         printf( "Cannot open cd-drive!\n" );
@@ -669,6 +902,7 @@ int main(int argc, char** argv)
 
     uint32_t TrackCount = AudioCD.GetTrackCount();
     std::cout << "Track-Count: " << TrackCount << std::endl;
+    g_iNoTracks = TrackCount;
 
     for ( uint32_t i=0; i<TrackCount; i++ )
     {
@@ -677,7 +911,7 @@ int main(int argc, char** argv)
     }
     
     oss << "/~cddb/cddb.cgi?cmd=cddb+query+" << AudioCD.cddbQueryPart() << "&hello=me@you.org+localhost+MyRipper+0.0.1&proto=6";
-    printf("\nCDDB ID: 0x%08x\n", AudioCD.cddbId());
+    printf("\nCDDB ID: 0x%08x\n\n", AudioCD.cddbId());
     VERBOSE(printf("CDDB Request: http://gnudb.gnudb.org%s\n",oss.str().c_str()));
     
     WinHttpWrapper::HttpRequest req(L"gnudb.gnudb.org", 443, true);
@@ -707,14 +941,19 @@ int main(int argc, char** argv)
         }
         
         char fname[MAX_PATH];
+
+        g_bRuns = TRUE;
         
+        std::thread PipeWatch(tfunc_readPipes);
         std::thread NetMd(tfunc_mdwrite);
         
         for (UINT i = 0; i < TrackCount; i++)
         {
+            g_iRipTrack = i + 1;
             GetTempFileNameA(tmpPath, "c2n", 0, fname);
 
-            std::cout << "Extracting Audio track " << i+1 << " to " << fname << std::endl;
+            VERBOSE(std::cout << "Extracting Audio track " << i+1 << " to " << fname << std::endl);
+
             AudioCD.ExtractTrack(i, fname);
             
             mtxTracks.lock();
@@ -740,7 +979,36 @@ int main(int argc, char** argv)
         
         // wait for md writing ends
         NetMd.join();
+
+        g_bRuns = FALSE;
+
+        PipeWatch.join();
     }
+
+    if (g_hNetMDCli_stdout_wr != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_hNetMDCli_stdout_wr);
+    } 
+    if (g_hNetMDCli_stdout_rd != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_hNetMDCli_stdout_rd);
+    } 
+    if (g_hAtracEnc_stdout_wr != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_hAtracEnc_stdout_wr);
+    } 
+    if (g_hAtracEnc_stdout_rd != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_hAtracEnc_stdout_rd);
+    } 
+    if (g_hCDRip_stdout_wr != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_hCDRip_stdout_wr);
+    } 
+    if (g_hCDRip_stdout_rd != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_hCDRip_stdout_rd);
+    } 
 
     return 0;
 }

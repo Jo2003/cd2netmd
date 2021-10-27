@@ -16,9 +16,10 @@
 
 
 // Constructor / Destructor
-CAudioCD::CAudioCD( char Drive )
+CAudioCD::CAudioCD( char Drive , std::ostream& os) : mOs(os)
 {
     m_hCD = NULL;
+
     if ( Drive != '\0' )
         Open( Drive );
 }
@@ -205,7 +206,7 @@ BOOL CAudioCD::ExtractTrack( ULONG TrackNr, LPCTSTR Path )
         if (percent != perlast)
         {
             perlast = percent;
-            std::cout << percent << "% of track #" << TrackNr + 1 << " ripped!" << std::endl;
+            mOs << percent << "% of track #" << TrackNr + 1 << " ripped!\r" << std::flush;
         }
         
         Info.DiskOffset.QuadPart = (Track.Address + i*SECTORS_AT_READ) * CD_SECTOR_SIZE;
@@ -231,7 +232,7 @@ BOOL CAudioCD::ExtractTrack( ULONG TrackNr, LPCTSTR Path )
             Info.DiskOffset.QuadPart = (Track.Address + i*SECTORS_AT_READ) * CD_SECTOR_SIZE;
             if (DeviceIoControl( m_hCD, IOCTL_CDROM_RAW_READ, &Info, sizeof(Info), Buf, Info.SectorCount*RAW_SECTOR_SIZE, &Dummy, NULL ) )
             {
-                std::cout << 100 << "% of track #" << TrackNr + 1 << " ripped!" << std::endl;
+                mOs << 100 << "% of track #" << TrackNr + 1 << " ripped!" << std::endl;
                 WriteFile( hFile, Buf, Info.SectorCount*RAW_SECTOR_SIZE, &Dummy, NULL );
             }
             else
