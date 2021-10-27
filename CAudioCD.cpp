@@ -242,14 +242,9 @@ BOOL CAudioCD::ExtractTrack( ULONG TrackNr, LPCTSTR Path )
             }
         }
     }
-    
-    FlushFileBuffers(hFile);
 
     return CloseHandle( hFile );
 }
-
-
-
 
 // Lock / Unlock CD-Rom Drive
 BOOL CAudioCD::LockCD()
