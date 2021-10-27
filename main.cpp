@@ -1074,6 +1074,7 @@ int main(int argc, char** argv)
             xenc_cv.notify_one();
         }
         
+        AudioCD.UnlockCD();
         AudioCD.EjectCD();
         
         xenc_complete = true;
