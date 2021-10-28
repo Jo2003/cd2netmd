@@ -11,7 +11,7 @@ set(SOURCES
 	AudioCD_Helpers.cpp
 	CAudioCD.cpp
 	WinHttpWrapper.cpp
-	main.cpp
+	cd2netmd.cpp
 )
 
 if(NOT CMAKE_BUILD_TYPE)
