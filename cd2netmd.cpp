@@ -17,12 +17,15 @@
 
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <fileapi.h>
 #include <ostream>
 #include <string>
 #include <iostream>
 #include <iomanip>
 #include <mutex>
+#include <synchapi.h>
 #include <thread>
 #include <vector>
 #include <condition_variable>
@@ -33,6 +36,7 @@
 #include "CAudioCD.h"
 #include "Flags.hh"
 #include "CPipeStream.hpp"
+#include "json.hpp"
 
 /// tool version
 static constexpr const char* C2N_VERSION = "v0.2.8";
@@ -56,7 +60,9 @@ enum class NetMDCmds : uint8_t {
     DISC_TITLE,         ///< write disc title
     WRITE_TRACK,        ///< write track in SP
     WRITE_TRACK_LP2,    ///< write tracl in lp2
-    WRITE_TRACK_LP4     ///< write track in lp4
+    WRITE_TRACK_LP4,    ///< write track in lp4
+    JSON_INFO,          ///< request json disc info
+    GROUP_TRACK         ///< group tracks
 };
 
 /// store track file name and title
@@ -448,20 +454,14 @@ int externAtrac3Encode(const std::string& file)
     std::ostringstream cmdLine;
     cmdLine << TOOLCHAIN_PATH << "atracdenc.exe ";
 
-    std::string enc = g_sXEncoding;
-
-    // encoding to lower case
-    std::transform(enc.begin(), enc.end(), enc.begin(),
-        [](unsigned char c){ return std::tolower(c); });
-
     NetMDCmds mode = NetMDCmds::UNKNOWN;
 
-    if (enc == "lp2")
+    if (g_sXEncoding == "lp2")
     {
         cmdLine << "-e atrac3 --bitrate=128 ";
         mode = NetMDCmds::WRITE_TRACK_LP2;
     }
-    else if (enc == "lp4")
+    else if (g_sXEncoding == "lp4")
     {
         cmdLine << "-e atrac3 --bitrate=64 ";
         mode = NetMDCmds::WRITE_TRACK_LP4;
@@ -536,10 +536,11 @@ int externAtrac3Encode(const std::string& file)
 //! @param[in]  cmd    The command
 //! @param[in]  file   The file
 //! @param[in]  title  The title
+//! @param[in]  track  The track
 //!
 //! @return     0 -> ok; -1 -> error
 //------------------------------------------------------------------------------
-int toNetMD(NetMDCmds cmd, const std::string& file = "", const std::string& title = "")
+int toNetMD(NetMDCmds cmd, const std::string& file = "", const std::string& title = "", int track = -1)
 {
     int err = 0;
     std::ostringstream cmdLine;
@@ -566,6 +567,12 @@ int toNetMD(NetMDCmds cmd, const std::string& file = "", const std::string& titl
         break;
     case NetMDCmds::WRITE_TRACK_LP4:
         cmdLine << "-d lp4 send \"" << file << "\" \"" << title << "\"";
+        break;
+    case NetMDCmds::JSON_INFO:
+        cmdLine << "list_json";
+        break;
+    case NetMDCmds::GROUP_TRACK:
+        cmdLine << "group " << track << " \"" << title << "\"";
         break;
     default:
         err = -1;
@@ -596,17 +603,11 @@ int tfunc_mdwrite()
 
     if (g_sXEncoding == "no")
     {
-        std::string enc = g_sEncoding;
-
-        // encoding to lower case
-        std::transform(enc.begin(), enc.end(), enc.begin(),
-            [](unsigned char c){ return std::tolower(c); });
-
-        if (enc == "lp2")
+        if (g_sEncoding == "lp2")
         {
             wrtCmd = NetMDCmds::WRITE_TRACK_LP2;
         }
-        else if (enc == "lp4")
+        else if (g_sEncoding == "lp4")
         {
             wrtCmd = NetMDCmds::WRITE_TRACK_LP4;
         }
@@ -949,6 +950,57 @@ void printInfo()
 }
 
 //------------------------------------------------------------------------------
+//! @brief      thread function to get json output from go-netmd-cli
+//!
+//! @param[in]  f     file handle of netmdcli stdout
+//! @param      json  The json string buffer
+//! @param      run   The run
+//!
+//! @return     0
+//------------------------------------------------------------------------------
+int tfunc_grabJson(HANDLE f, std::string& json, bool& run)
+{
+    char buff[4096];
+    DWORD read;
+
+    while (run)
+    {
+        if (ReadFile(f, buff, 4095, &read, nullptr))
+        {
+            if (read > 0)
+            {
+                buff[read] = '\0';
+                json += buff;
+            }
+        }
+        Sleep(1);
+    }
+    return 0;
+}
+
+//------------------------------------------------------------------------------
+//! @brief      Gets the md information.
+//!
+//! @param      j     reference to json object
+//------------------------------------------------------------------------------
+void getMDInfo(nlohmann::json& j)
+{
+    bool run = true;
+    std::string junk;
+    std::thread JRead(tfunc_grabJson, g_hNetMDCli_stdout_rd, std::ref(junk), std::ref(run));
+    toNetMD(NetMDCmds::JSON_INFO);
+    Sleep(500);
+    run = false;
+    JRead.join();
+
+    junk = junk.substr(0, junk.rfind('}') + 1);
+
+    VERBOSE(std::cout << junk << std::endl);
+
+    j = nlohmann::json::parse(junk);
+}
+
+//------------------------------------------------------------------------------
 //! @brief      program entry point
 //!
 //! @param[in]  argc  The count of arguments
@@ -1030,6 +1082,14 @@ int main(int argc, char** argv)
         oss.str("");
     }
 
+    // encoding strings to lower 
+    std::transform(g_sEncoding.begin(), g_sEncoding.end(), g_sEncoding.begin(),
+            [](unsigned char c){ return std::tolower(c); });
+
+    std::transform(g_sXEncoding.begin(), g_sXEncoding.end(), g_sXEncoding.begin(),
+            [](unsigned char c){ return std::tolower(c); });
+
+
     if (openPipes() != 0)
     {
         closePipes();
@@ -1045,6 +1105,9 @@ int main(int argc, char** argv)
 
     // Enable buffering to prevent VS from chopping up UTF-8 byte sequences
     setvbuf(stdout, nullptr, _IOFBF, 1000);
+
+    nlohmann::json j;
+    getMDInfo(j);
     
     TCHAR tmpPath[MAX_PATH];
     GetTempPathA(MAX_PATH, tmpPath);
@@ -1062,10 +1125,40 @@ int main(int argc, char** argv)
     std::cout << "Track-Count: " << TrackCount << std::endl;
     g_iNoTracks = TrackCount;
 
+    uint32_t u32DiscTime = 0;
+
     for ( uint32_t i=0; i<TrackCount; i++ )
     {
         uint32_t Time = AudioCD.GetTrackTime( i );
+        u32DiscTime += Time;
         printf( "Track %u: %u:%.2u;  %u bytes\n", i+1, Time/60, Time%60, static_cast<uint32_t>(AudioCD.GetTrackSize(i)) );
+    }
+
+    if (!j.empty() && j.is_object())
+    {
+        uint32_t tDiscEnc  = u32DiscTime;
+        uint32_t tDiscFree = g_bNoCDDBLookup ? j.at("FreeSec").get<uint32_t>() : j.at("TotSec").get<uint32_t>();
+        std::string sDiscFree = g_bNoCDDBLookup ? j.at("Free").get<std::string>() : j.at("Capacity").get<std::string>();
+
+        // do we use compression ... ?
+        if ((g_sXEncoding == "lp2") || (g_sEncoding == "lp2"))
+        {
+            tDiscEnc /= 2;
+        }
+        else if ((g_sXEncoding == "lp4") || (g_sEncoding == "lp4"))
+        {
+            tDiscEnc /= 4;
+        }
+
+        if (tDiscFree < tDiscEnc)
+        {
+            oss << std::setw(2) << std::setfill('0') << (tDiscEnc / 3600) << "h " 
+                << std::setw(2) << std::setfill('0') << ((tDiscEnc % 3600) / 60) << "m "
+                << std::setw(2) << std::setfill('0') << ((tDiscEnc % 3600) % 60) << "s";
+            std::cerr << "Not enough free space on MD (need: " << oss.str() << ", have: " << sDiscFree <<  ")." << std::endl;
+            closePipes();
+            return -2;
+        }
     }
     
     oss << "/~cddb/cddb.cgi?cmd=cddb+query+" << AudioCD.cddbQueryPart() << "&hello=me@you.org+localhost+MyRipper+0.0.1&proto=6";
