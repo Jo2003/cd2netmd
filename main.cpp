@@ -1,29 +1,24 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdio>
-#include <fileapi.h>
-#include <handleapi.h>
-#include <sstream>
-#include <fstream>
 #include <ostream>
 #include <string>
 #include <iostream>
 #include <iomanip>
-#include <sstream>
 #include <mutex>
 #include <thread>
 #include <vector>
 #include <condition_variable>
 #include <windows.h>
 #include <tchar.h>
-#include <sys/types.h>
-#include <algorithm>
-// #include <winnt.h>
 #include <io.h>
 #include "WinHttpWrapper.h"
 #include "CAudioCD.h"
 #include "Flags.hh"
 #include "CPipeStream.hpp"
+
+/// tool version
+static constexpr const char* C2N_VERSION = "v0.2.8";
 
 /// tool chain path
 static constexpr const char* TOOLCHAIN_PATH = "toolchain/";
@@ -207,7 +202,7 @@ std::string parseResultLine(const std::string& line, std::string& descr)
     size_t next = 0; 
     int    no   = 0;
 
-    while ((next = line.find_first_of(" \n\r\t", last)) != std::string::npos)
+    while ((next = line.find_first_of(" \t", last)) != std::string::npos)
     {
         if (no == 0)
         {
@@ -362,6 +357,67 @@ int parseCddbInfo(const std::string& input, std::vector<std::string>& info)
 }
 
 //------------------------------------------------------------------------------
+//! @brief      make Atrac3 wave header to transfer pre-encoded data
+//!
+//! @param      fWave   The opened wave file
+//! @param[in]  mode    The mode
+//! @param[in]  dataSz  The data size
+//!
+//! @return     0 -> ok; -1 -> error
+//------------------------------------------------------------------------------
+int atrac3WaveHeader(FILE* fWave, NetMDCmds mode, uint32_t dataSz)
+{
+    int ret = -1;
+
+    if ((fWave != nullptr) 
+        && ((mode == NetMDCmds::WRITE_TRACK_LP2) || (mode == NetMDCmds::WRITE_TRACK_LP4))
+        && (dataSz > 92)) // 1x lp4 frame size
+    {
+        // heavily inspired by atrac3tool and completed through
+        // reverse engineering of ffmpeg output ...
+        char dstFormatBuf[0x20];
+        WAVEFORMATEX *pDstFormat   = (WAVEFORMATEX *)dstFormatBuf;
+        pDstFormat->wFormatTag     = WAVE_FORMAT_SONY_SCX;
+        pDstFormat->nChannels      = 2;
+        pDstFormat->nSamplesPerSec = 44100;
+        if (mode == NetMDCmds::WRITE_TRACK_LP2)
+        {
+            pDstFormat->nAvgBytesPerSec = 16537;
+            pDstFormat->nBlockAlign     = 0x180;
+            memcpy(&dstFormatBuf[0x12], "\x01\x00\x44\xAC\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00", 0xE);
+        }
+        else if (mode == NetMDCmds::WRITE_TRACK_LP4)
+        {
+            pDstFormat->nAvgBytesPerSec = 8268;
+            pDstFormat->nBlockAlign     = 0xc0;
+            memcpy(&dstFormatBuf[0x12], "\x01\x00\x44\xAC\x00\x00\x01\x00\x01\x00\x01\x00\x00\x00", 0xE);
+        }
+        
+        pDstFormat->wBitsPerSample = 0;
+        pDstFormat->cbSize         = 0xE;
+
+        uint32_t i = 0xC + 8 + 0x20 + 8 + dataSz - 8;
+
+        fwrite("RIFF", 1, 4, fWave);
+        fwrite(&i, 4, 1, fWave);
+        fwrite("WAVE", 1, 4, fWave);
+
+        fwrite("fmt ", 1, 4, fWave);
+        i = 0x20;
+        fwrite(&i, 4, 1, fWave);
+        fwrite(dstFormatBuf, 1, 0x20, fWave);
+
+        fwrite("data", 1, 4, fWave);
+        i = dataSz;
+        fwrite(&i, 4, 1, fWave);
+
+        ret = 0;
+    }
+
+    return ret;
+}
+
+//------------------------------------------------------------------------------
 //! @brief      do extern atrac3 encode using atracdenc
 //!
 //! @param[in]  file  The file name to encode
@@ -406,58 +462,21 @@ int externAtrac3Encode(const std::string& file)
             // open atrac file for size check
             HANDLE hAtrac = CreateFileA(atracFile.c_str(), GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
-            DWORD sz = 0;
-
             if (hAtrac != INVALID_HANDLE_VALUE)
             {
                 // get file size
-                sz = GetFileSize(hAtrac, nullptr) - ATRAC3_HEADER_SIZE;
+                DWORD sz = GetFileSize(hAtrac, nullptr) - ATRAC3_HEADER_SIZE;
 
+                // overwrite original wave file
                 FILE *fWave = fopen(file.c_str(), "wb");
         
                 if (fWave != nullptr)
                 {
-                    // heavily inspired by atrac3tool and completed through
-                    // reverse engineering of ffmpeg output ...
-                    char dstFormatBuf[0x20];
-                    WAVEFORMATEX *pDstFormat = (WAVEFORMATEX *)dstFormatBuf;
-                    pDstFormat->wFormatTag = WAVE_FORMAT_SONY_SCX;
-                    pDstFormat->nChannels = 2;
-                    pDstFormat->nSamplesPerSec = 44100;
-                    if (mode == NetMDCmds::WRITE_TRACK_LP2)
-                    {
-                        pDstFormat->nAvgBytesPerSec = 16537;
-                        pDstFormat->nBlockAlign = 0x180;
-                        memcpy(&dstFormatBuf[0x12], "\x01\x00\x44\xAC\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00", 0xE);
-                    }
-                    else if (mode == NetMDCmds::WRITE_TRACK_LP4)
-                    {
-                        pDstFormat->nAvgBytesPerSec = 8268;
-                        pDstFormat->nBlockAlign = 0xc0;
-                        memcpy(&dstFormatBuf[0x12], "\x01\x00\x44\xAC\x00\x00\x01\x00\x01\x00\x01\x00\x00\x00", 0xE);
-                    }
+                    // create wave header
+                    atrac3WaveHeader(fWave, mode, sz);
                     
-                    pDstFormat->wBitsPerSample = 0;
-                    pDstFormat->cbSize = 0xE;
-
-                    DWORD written = 0, read = 0, copied = 0;
-
-                    DWORD32 i = 0xC + 8 + 0x20 + 8 + sz - 8;
-
-                    fwrite("RIFF", 1, 4, fWave);
-                    fwrite(&i, 4, 1, fWave);
-                    fwrite("WAVE", 1, 4, fWave);
-
-                    fwrite("fmt ", 1, 4, fWave);
-                    i = 0x20;
-                    fwrite(&i, 4, 1, fWave);
-                    fwrite(dstFormatBuf, 1, 0x20, fWave);
-
-                    fwrite("data", 1, 4, fWave);
-                    i = sz;
-                    fwrite(&i, 4, 1, fWave);
-
                     unsigned char buff[16'384];
+                    DWORD written = 0, read = 0, copied = 0;
 
                     // drop atrac 3 header
                     ReadFile(hAtrac, buff, ATRAC3_HEADER_SIZE, &read, NULL);
@@ -700,14 +719,13 @@ int extractPercent(const std::string& tok)
         {
             percent = std::stoi(tok.substr(0));
         }
-        
     }
 
     return percent;
 }
 
 //------------------------------------------------------------------------------
-//! @brief      Makes a status bar.
+//! @brief      Makes a status bar (stream formatting sucks!).
 //!
 //! @param[in]  rip   The rip %
 //! @param[in]  enc   The encode %
@@ -715,6 +733,8 @@ int extractPercent(const std::string& tok)
 //------------------------------------------------------------------------------
 void makeStatusBar(int rip, int enc, int trf)
 {
+    static uint32_t cycle = 0;
+    const char spinner[] = {'|', '/', '-', '\\'};
     std::string srip, senc, strf;
     std::ostringstream oss;
 
@@ -739,9 +759,6 @@ void makeStatusBar(int rip, int enc, int trf)
         << trf << "%";
     strf = oss.str();
 
-    oss.clear();
-    oss.str("");
-
     std::cout << "\r[ CD-Rip: " << srip << " ] ";
 
     if (g_sXEncoding != "no")
@@ -749,7 +766,8 @@ void makeStatusBar(int rip, int enc, int trf)
         std::cout << "[ X-Encode: " << senc << " ] ";
     }
 
-    std::cout << "[ MD Transfer: " << strf << " ] " << std::flush;
+    std::cout << "[ MD Transfer: " << strf << " ] " << spinner[cycle] << std::flush;
+    cycle = (++cycle > 3) ? 0 : cycle;
 }
 
 //------------------------------------------------------------------------------
@@ -773,6 +791,7 @@ int tfunc_readPipes()
     
     while(g_bRuns)
     {
+        // nemdcli stdout
         if (ReadFile(g_hNetMDCli_stdout_rd, buffNetMD, 4095, &readNetMD, 0))
         {
             if (readNetMD > 0)
@@ -787,6 +806,7 @@ int tfunc_readPipes()
             }
         }
 
+        // atracdenc stdout
         if (ReadFile(g_hAtracEnc_stdout_rd, buffAtracEnc, 4095, &readAtracEnc, 0))
         {
             if (readAtracEnc > 0)
@@ -800,6 +820,7 @@ int tfunc_readPipes()
             }
         }
 
+        // piped rip progress (think of stdout)
         if (ReadFile(g_hCDRip_stdout_rd, buffCDRip, 4095, &readCDRip, 0))
         {
             if (readCDRip > 0)
@@ -899,6 +920,18 @@ void closePipes()
 }
 
 //------------------------------------------------------------------------------
+//! @brief      Prints an information.
+//------------------------------------------------------------------------------
+void printInfo()
+{
+    std::cout << std::endl
+              << " cd2netmd Version " << C2N_VERSION << ", built at " << __DATE__ << std::endl
+              << " Project site: https://github.com/Jo2003/cd2netmd" << std::endl
+              // << " Support me through PayPal: coujo@coujo.de" << std::endl
+              << " ------------------------------------------------" << std::endl << std::endl;
+}
+
+//------------------------------------------------------------------------------
 //! @brief      program entry point
 //!
 //! @param[in]  argc  The count of arguments
@@ -920,20 +953,24 @@ int main(int argc, char** argv)
     Flags parser(columns);
     parser.Bool(g_bVerbose     , 'v', "verbose"      , "Does verbose output.");
     parser.Bool(g_bHelp        , 'h', "help"         , "Prints help screen and exits program.");
-    parser.Bool(g_bNoMdDelete  , 'n', "no-delete"    , "Don't erase MD before writing (also MDs disc title will not be changed).");
-    parser.Bool(g_bNoCDDBLookup, 'i', "ignore-cddb"  , "Ignore CDDB lookup errors.");
+    parser.Bool(g_bNoMdDelete  , 'a', "append"       , "Don't erase MD before writing, but append tracks instead. "
+                                                       "MDs discs title will not be changed.");
+    parser.Bool(g_bNoCDDBLookup, 'i', "ignore-cddb"  , "Ignore CDDB lookup errors. If no match in CDDB is found your "
+                                                       "tracks on MD will be untitled.");
     parser.Var (g_cDrive       , 'd', "drive-letter" , '-'              , "Drive letter of CD drive to use (w/o colon). "
                                                                           "If not given first CD drive found will be used.");
 
     parser.Var (g_sEncoding    , 'e', "encode"       , std::string{"sp"}, "On-the-fly encoding mode on NetMD device while transfer. "
-                                                                          "Default is 'sp'. Note: MDLP (lp2, lp4) modi are only "
-                                                                          "supported on SHARP IM-DR4x0, Sony MDS-JB980, Sony MDS-JB780.");
+                                                                          "Default is 'sp'. Note: MDLP modi (lp2, lp4) are supported "
+                                                                          "only on SHARP IM-DR4x0, Sony MDS-JB980, Sony MDS-JB780.");
     
-    parser.Var (g_sXEncoding   , 'x', "ext-encode"   , std::string{"no"}, "External encoding for NetMD transfer. "
+    parser.Var (g_sXEncoding   , 'x', "ext-encode"   , std::string{"no"}, "External encoding before NetMD transfer. "
                                                                           "Default is 'no'. MDLP modi (lp2, lp4) are supported. "
                                                                           "Note: lp4 sounds horrible. Use it - if any - only for "
                                                                           "audio books! In case your NetMD device supports On-the-fly "
                                                                           "encoding, better use -e option instead!");
+
+    printInfo();
 
     if (!parser.Parse(argc, argv)) 
     {
@@ -1038,20 +1075,27 @@ int main(int argc, char** argv)
     
     if (!tracks.empty() || g_bNoCDDBLookup)
     {
+        // file name buffer
+        char fname[MAX_PATH];
+
+        // thread loop should run
+        g_bRuns = TRUE;
+
+        // stdout parse thread
+        std::thread PipeWatch(tfunc_readPipes);
+        
+        // external encoder thread
+        std::thread XEnc(tfunc_xencode);
+        
+        // netmd transfer thread
+        std::thread NetMd(tfunc_mdwrite);
+
         if (!g_bNoMdDelete)
         {
             toNetMD(NetMDCmds::ERASE_DISC);
             toNetMD(NetMDCmds::DISC_TITLE, "", tracks.empty() ? "" : tracks.at(0));
             WriteFile(g_hNetMDCli_stdout_wr, " 0% \n", 5, nullptr, nullptr);
         }
-        
-        char fname[MAX_PATH];
-
-        g_bRuns = TRUE;
-        
-        std::thread PipeWatch(tfunc_readPipes);
-        std::thread XEnc(tfunc_xencode);
-        std::thread NetMd(tfunc_mdwrite);
         
         for (UINT i = 0; i < TrackCount; i++)
         {
@@ -1066,7 +1110,7 @@ int main(int argc, char** argv)
             xenc_TracksDescr.push_back({(tracks.empty() ? "" : tracks.at(i+1)), fname});
             xenc_mtxTracks.unlock();
             
-            // notify md write thread
+            // notify external encoder thread
             {
                 std::lock_guard<std::mutex> lk(xenc_m);
                 xenc_ready = true;
@@ -1084,14 +1128,22 @@ int main(int argc, char** argv)
         }
         xenc_cv.notify_one();
 
+        // wait for encoder thread
         XEnc.join();
         
         // wait for md writing ends
         NetMd.join();
 
+        // stop thread loop
         g_bRuns = FALSE;
 
+        // wait for stdout parser
         PipeWatch.join();
+    }
+    else
+    {
+        std::cerr << "Error: No CDDB entry found for this CD. "
+                  << "To force copy this CD, use command line option '-i'!" << std::endl;
     }
 
     closePipes();
