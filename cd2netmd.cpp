@@ -39,7 +39,7 @@
 #include "json.hpp"
 
 /// tool version
-static constexpr const char* C2N_VERSION = "v0.2.8";
+static constexpr const char* C2N_VERSION = "v0.3.0";
 
 /// tool chain path
 static constexpr const char* TOOLCHAIN_PATH = "toolchain/";
@@ -97,8 +97,9 @@ bool xenc_complete = false;      ///< synchronization helper
 /// cmd line parameters
 bool        g_bVerbose;     ///< do verbose output if set
 bool        g_bHelp;        ///< print help if set
-bool        g_bNoMdDelete;  ///< don't delte MD before writing if set
+bool        g_bAppend;      ///< append tracks, don't delete MD before writing
 bool        g_bNoCDDBLookup;///< don't use CDDB lookup
+bool        g_bDontGroup;   ///< don't group new tracks in lp mode
 char        g_cDrive;       ///< drive letter of CD drive
 std::string g_sEncoding;    ///< NetMD encoding
 std::string g_sXEncoding;   ///< NetMD external encoding
@@ -557,7 +558,7 @@ int toNetMD(NetMDCmds cmd, const std::string& file = "", const std::string& titl
         cmdLine << "erase_disc";
         break;
     case NetMDCmds::DISC_TITLE:
-        cmdLine << "title \"" << title << "\"";
+        cmdLine << "plain_title \"" << title << "\"";
         break;
     case NetMDCmds::WRITE_TRACK:
         cmdLine << "send \"" << file << "\" \"" << title << "\"";
@@ -1001,6 +1002,203 @@ void getMDInfo(nlohmann::json& j)
 }
 
 //------------------------------------------------------------------------------
+//! @brief      Prints a md information.
+//!
+//! @param[in]  j     disc info json object
+//------------------------------------------------------------------------------
+void printMDInfo(const nlohmann::json& j)
+{
+    try
+    {
+        std::cout << "MD Information:" << std::endl
+                  << "===============" << std::endl;
+
+        nlohmann::json disc = j["Disc"];
+        std::cout << "Disc Name: "
+                  << disc["Name"].get<std::string>() << std::endl;
+        
+        if (disc["Groups"].is_array())
+        {
+            for (const auto& group : disc["Groups"])
+            {
+                std::cout << " [" << group["Name"].get<std::string>() << "]" << std::endl;
+
+                if (group["Tracks"].is_array())
+                {
+                    for (const auto& track : group["Tracks"])
+                    {
+                        std::cout << "  " << std::setw(2) << std::right << track["No"].get<int>() << std::left
+                                  << ") " << track["Name"].get<std::string>() 
+                                  << " " << track["Length"].get<std::string>() 
+                                  << " " << track["Enc"].get<std::string>() << std::endl;
+                    }
+                }
+            }
+        }
+
+        if (disc["Tracks"].is_array())
+        {
+            for (const auto& track : disc["Tracks"])
+            {
+                std::cout << std::setw(2) << std::right << track["No"].get<int>() << std::left
+                          << ") " << track["Name"].get<std::string>() 
+                          << " " << track["Length"].get<std::string>() 
+                          << " " << track["Enc"].get<std::string>() << std::endl;
+            }
+        }
+    }
+    catch(...)
+    {
+        std::cerr << "MD disc info!" << std::endl;
+    }
+}
+
+//------------------------------------------------------------------------------
+//! @brief      do some sanity check
+//!
+//! @param[in]  discTime  The disc time
+//! @param[in]  j         json object with disc- / device information
+//!
+//! @return     0 -> ok; -1 -> error
+//------------------------------------------------------------------------------
+int sanityCheck(uint32_t discTime, const nlohmann::json& j)
+{
+    int ret = 0;
+    std::ostringstream oss;
+
+    // do some more sanity checks
+    if (!j.empty() && j.is_object())
+    {
+        try
+        {
+            if (((g_sEncoding == "lp4") || (g_sEncoding == "lp2")) && !j["OfLpEnc"].get<bool>())
+            {
+                std::cout << std::endl
+                          << "Note:" << std::endl 
+                          << "Your NetMD device \"" << j["Name"].get<std::string>() 
+                          << "\" doesn't support on-the-fly lp encoding!" << std::endl 
+                          << "We'll use the external encoder instead!" << std::endl;
+
+                g_sXEncoding = g_sEncoding;
+                g_sEncoding  = "sp";
+            }
+
+            if ((j["Disc"]["TotSec"].get<int>() != j["Disc"]["FreeSec"].get<int>()) && !g_bAppend)
+            {
+                printMDInfo(j);
+
+                std::cout << std::endl 
+                          << "Do you want to (a)ppend the tracks, (e)rase the MD, or (q)uit?" 
+                          << std::endl;
+
+                std::string input;
+                bool done = false;
+
+                do
+                {
+                    std::cin >> input;
+                    switch (input.at(0))
+                    {
+                    case 'a': g_bAppend = true; done = true; break;
+                    case 'e':                   done = true; break;
+                    case 'q': return -2;                    
+                    default:
+                        std::cout << "Try again: (a)ppend the tracks, (e)rase the MD, or (q)uit?" 
+                                  << std::endl;
+                        input.clear();
+                        break;
+                    }
+                }
+                while(!done);
+            }
+
+            uint32_t tDiscEnc  = discTime;
+            uint32_t tDiscFree = g_bAppend ? j["Disc"]["FreeSec"].get<uint32_t>() : j["Disc"]["TotSec"].get<uint32_t>();
+            std::string sDiscFree = g_bAppend ? j["Disc"]["Free"].get<std::string>() : j["Disc"]["Capacity"].get<std::string>();
+
+            // do we use compression ... ?
+            if ((g_sXEncoding == "lp2") || (g_sEncoding == "lp2"))
+            {
+                tDiscEnc /= 2;
+            }
+            else if ((g_sXEncoding == "lp4") || (g_sEncoding == "lp4"))
+            {
+                tDiscEnc /= 4;
+            }
+
+            if (tDiscFree < tDiscEnc)
+            {
+                oss << std::setw(2) << std::setfill('0') << (tDiscEnc / 3600) << "h " 
+                    << std::setw(2) << std::setfill('0') << ((tDiscEnc % 3600) / 60) << "m "
+                    << std::setw(2) << std::setfill('0') << ((tDiscEnc % 3600) % 60) << "s";
+                std::cerr << "Not enough free space on MD (need: " << oss.str() << ", have: " << sDiscFree <<  ")." << std::endl;
+                ret = -2;
+            }
+        }
+        catch(...)
+        {
+            std::cerr << "Can't access device / MD disc info!" << std::endl;
+        }
+    }
+
+    return ret;
+}
+
+//------------------------------------------------------------------------------
+//! @brief      Makes a group title.
+//!
+//! @param[in]  gt    disc title
+//!
+//! @return     group title
+//------------------------------------------------------------------------------
+std::string makeGroupTitle(const std::string& gt)
+{
+    std::size_t pos;
+    std::string tok = gt;
+
+    if ((pos = gt.find('-')) != std::string::npos)
+    {
+        tok = gt.substr(pos + 1);
+    }
+
+    while ((pos = tok.find_first_of(" \t")) != std::string::npos)
+    {
+        if (pos == 0)
+        {
+            tok = tok.substr(1);
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    // remove some well known token starts
+    if ((pos = tok.find_first_of("([{-/<>")) != std::string::npos)
+    {
+        if (pos > 5)
+        {
+            tok = tok.substr(0, pos);
+        }
+    }
+
+    if ((pos = tok.find_last_not_of(" \t")) != std::string::npos)
+    {
+        tok = tok.substr(0, pos + 1);
+    }
+
+    if (tok.size() > 25)
+    {
+        if ((pos = tok.find_last_of(" \t", 25)) != std::string::npos)
+        {
+            tok = tok.substr(0, pos);
+        }
+    }
+
+    return tok;
+}
+
+//------------------------------------------------------------------------------
 //! @brief      program entry point
 //!
 //! @param[in]  argc  The count of arguments
@@ -1013,6 +1211,7 @@ int main(int argc, char** argv)
     std::ostringstream oss;
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     size_t columns = 80;
+    bool isLp = false;
 
     if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi))
     {
@@ -1022,10 +1221,11 @@ int main(int argc, char** argv)
     Flags parser(columns);
     parser.Bool(g_bVerbose     , 'v', "verbose"      , "Does verbose output.");
     parser.Bool(g_bHelp        , 'h', "help"         , "Prints help screen and exits program.");
-    parser.Bool(g_bNoMdDelete  , 'a', "append"       , "Don't erase MD before writing, but append tracks instead. "
+    parser.Bool(g_bAppend      , 'a', "append"       , "Don't erase MD before writing, but append tracks instead. "
                                                        "MDs discs title will not be changed.");
     parser.Bool(g_bNoCDDBLookup, 'i', "ignore-cddb"  , "Ignore CDDB lookup errors. If no match in CDDB is found your "
                                                        "tracks on MD will be untitled.");
+    parser.Bool(g_bDontGroup   , 'g', "no-group"     , "Don't create group for new tracks on MD.");
     parser.Var (g_cDrive       , 'd', "drive-letter" , '-'              , "Drive letter of CD drive to use (w/o colon). "
                                                                           "If not given first CD drive found will be used.");
 
@@ -1089,6 +1289,13 @@ int main(int argc, char** argv)
     std::transform(g_sXEncoding.begin(), g_sXEncoding.end(), g_sXEncoding.begin(),
             [](unsigned char c){ return std::tolower(c); });
 
+    if ((g_sXEncoding == "lp2")
+        || (g_sXEncoding == "lp4")
+        || (g_sEncoding == "lp2")
+        || (g_sEncoding == "lp4"))
+    {
+        isLp = true;
+    }
 
     if (openPipes() != 0)
     {
@@ -1134,31 +1341,11 @@ int main(int argc, char** argv)
         printf( "Track %u: %u:%.2u;  %u bytes\n", i+1, Time/60, Time%60, static_cast<uint32_t>(AudioCD.GetTrackSize(i)) );
     }
 
-    if (!j.empty() && j.is_object())
+    // do some more sanity checks
+    if (sanityCheck(u32DiscTime, j) != 0)
     {
-        uint32_t tDiscEnc  = u32DiscTime;
-        uint32_t tDiscFree = g_bNoCDDBLookup ? j.at("FreeSec").get<uint32_t>() : j.at("TotSec").get<uint32_t>();
-        std::string sDiscFree = g_bNoCDDBLookup ? j.at("Free").get<std::string>() : j.at("Capacity").get<std::string>();
-
-        // do we use compression ... ?
-        if ((g_sXEncoding == "lp2") || (g_sEncoding == "lp2"))
-        {
-            tDiscEnc /= 2;
-        }
-        else if ((g_sXEncoding == "lp4") || (g_sEncoding == "lp4"))
-        {
-            tDiscEnc /= 4;
-        }
-
-        if (tDiscFree < tDiscEnc)
-        {
-            oss << std::setw(2) << std::setfill('0') << (tDiscEnc / 3600) << "h " 
-                << std::setw(2) << std::setfill('0') << ((tDiscEnc % 3600) / 60) << "m "
-                << std::setw(2) << std::setfill('0') << ((tDiscEnc % 3600) % 60) << "s";
-            std::cerr << "Not enough free space on MD (need: " << oss.str() << ", have: " << sDiscFree <<  ")." << std::endl;
-            closePipes();
-            return -2;
-        }
+        closePipes();
+        return -2;
     }
     
     oss << "/~cddb/cddb.cgi?cmd=cddb+query+" << AudioCD.cddbQueryPart() << "&hello=me@you.org+localhost+MyRipper+0.0.1&proto=6";
@@ -1200,10 +1387,12 @@ int main(int argc, char** argv)
         // netmd transfer thread
         std::thread NetMd(tfunc_mdwrite);
 
-        if (!g_bNoMdDelete)
+        if (!g_bAppend)
         {
+            std::string discName = g_bDontGroup ? tracks.at(0) : "";
             toNetMD(NetMDCmds::ERASE_DISC);
-            toNetMD(NetMDCmds::DISC_TITLE, "", tracks.empty() ? "" : tracks.at(0));
+
+            toNetMD(NetMDCmds::DISC_TITLE, "", discName);
             WriteFile(g_hNetMDCli_stdout_wr, " 0% \n", 5, nullptr, nullptr);
         }
         
@@ -1243,6 +1432,13 @@ int main(int argc, char** argv)
         
         // wait for md writing ends
         NetMd.join();
+
+        if (isLp && !g_bDontGroup && !tracks.at(0).empty())
+        {
+            // put new encoded tracks into group
+            int lastTrack = g_bAppend ? (j["Disc"]["TCount"].get<int>() + TrackCount) : TrackCount;
+            toNetMD(NetMDCmds::GROUP_TRACK, "", makeGroupTitle(tracks.at(0)), lastTrack);
+        }
 
         // stop thread loop
         g_bRuns = FALSE;
