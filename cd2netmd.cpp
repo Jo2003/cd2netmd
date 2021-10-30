@@ -39,7 +39,7 @@
 #include "json.hpp"
 
 /// tool version
-static constexpr const char* C2N_VERSION = "v0.3.0";
+static constexpr const char* C2N_VERSION = "v0.3.1";
 
 /// tool chain path
 static constexpr const char* TOOLCHAIN_PATH = "toolchain/";
@@ -1112,27 +1112,35 @@ int sanityCheck(uint32_t discTime, const nlohmann::json& j)
                 while(!done);
             }
 
-            uint32_t tDiscEnc  = discTime;
-            uint32_t tDiscFree = g_bAppend ? j["Disc"]["FreeSec"].get<uint32_t>() : j["Disc"]["TotSec"].get<uint32_t>();
-            std::string sDiscFree = g_bAppend ? j["Disc"]["Free"].get<std::string>() : j["Disc"]["Capacity"].get<std::string>();
-
-            // do we use compression ... ?
-            if ((g_sXEncoding == "lp2") || (g_sEncoding == "lp2"))
+            // (temporary?) workaround for Sony MD JE780
+            if ((j["Disc"]["FreeSec"].get<uint32_t>() == 0) && (j["Disc"]["TotSec"].get<uint32_t>() == 0))
             {
-                tDiscEnc /= 2;
+                std::cout << "Can't do capacity check. Hoping for the best and going on!" << std::endl;
             }
-            else if ((g_sXEncoding == "lp4") || (g_sEncoding == "lp4"))
+            else
             {
-                tDiscEnc /= 4;
-            }
+                uint32_t tDiscEnc  = discTime;
+                uint32_t tDiscFree = g_bAppend ? j["Disc"]["FreeSec"].get<uint32_t>() : j["Disc"]["TotSec"].get<uint32_t>();
+                std::string sDiscFree = g_bAppend ? j["Disc"]["Free"].get<std::string>() : j["Disc"]["Capacity"].get<std::string>();
 
-            if (tDiscFree < tDiscEnc)
-            {
-                oss << std::setw(2) << std::setfill('0') << (tDiscEnc / 3600) << "h " 
-                    << std::setw(2) << std::setfill('0') << ((tDiscEnc % 3600) / 60) << "m "
-                    << std::setw(2) << std::setfill('0') << ((tDiscEnc % 3600) % 60) << "s";
-                std::cerr << "Not enough free space on MD (need: " << oss.str() << ", have: " << sDiscFree <<  ")." << std::endl;
-                ret = -2;
+                // do we use compression ... ?
+                if ((g_sXEncoding == "lp2") || (g_sEncoding == "lp2"))
+                {
+                    tDiscEnc /= 2;
+                }
+                else if ((g_sXEncoding == "lp4") || (g_sEncoding == "lp4"))
+                {
+                    tDiscEnc /= 4;
+                }
+
+                if (tDiscFree < tDiscEnc)
+                {
+                    oss << std::setw(2) << std::setfill('0') << (tDiscEnc / 3600) << "h " 
+                        << std::setw(2) << std::setfill('0') << ((tDiscEnc % 3600) / 60) << "m "
+                        << std::setw(2) << std::setfill('0') << ((tDiscEnc % 3600) % 60) << "s";
+                    std::cerr << "Not enough free space on MD (need: " << oss.str() << ", have: " << sDiscFree <<  ")." << std::endl;
+                    ret = -2;
+                }
             }
         }
         catch(...)
