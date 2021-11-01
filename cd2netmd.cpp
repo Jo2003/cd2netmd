@@ -39,7 +39,7 @@
 #include "json.hpp"
 
 /// tool version
-static constexpr const char* C2N_VERSION = "v0.3.1";
+static constexpr const char* C2N_VERSION = "v0.3.2";
 
 /// tool chain path
 static constexpr const char* TOOLCHAIN_PATH = "toolchain/";
@@ -1112,35 +1112,51 @@ int sanityCheck(uint32_t discTime, const nlohmann::json& j)
                 while(!done);
             }
 
-            // (temporary?) workaround for Sony MD JE780
-            if ((j["Disc"]["FreeSec"].get<uint32_t>() == 0) && (j["Disc"]["TotSec"].get<uint32_t>() == 0))
+            uint32_t tDiscFree = g_bAppend ? j["Disc"]["FreeSec"].get<uint32_t>() : j["Disc"]["TotSec"].get<uint32_t>();
+
+            // do we use compression ... ?
+            if ((g_sXEncoding == "lp2") || (g_sEncoding == "lp2"))
             {
-                std::cout << "Can't do capacity check. Hoping for the best and going on!" << std::endl;
+                tDiscFree *= 2;
             }
-            else
+            else if ((g_sXEncoding == "lp4") || (g_sEncoding == "lp4"))
             {
-                uint32_t tDiscEnc  = discTime;
-                uint32_t tDiscFree = g_bAppend ? j["Disc"]["FreeSec"].get<uint32_t>() : j["Disc"]["TotSec"].get<uint32_t>();
-                std::string sDiscFree = g_bAppend ? j["Disc"]["Free"].get<std::string>() : j["Disc"]["Capacity"].get<std::string>();
+                tDiscFree *= 4;
+            }
 
-                // do we use compression ... ?
-                if ((g_sXEncoding == "lp2") || (g_sEncoding == "lp2"))
+            if (tDiscFree < discTime)
+            {
+                int hour, minute, second;
+                hour   = discTime / 3600;
+                minute = ((discTime % 3600) / 60);
+                second = ((discTime % 3600) % 60);
+
+                if (hour)
                 {
-                    tDiscEnc /= 2;
-                }
-                else if ((g_sXEncoding == "lp4") || (g_sEncoding == "lp4"))
-                {
-                    tDiscEnc /= 4;
+                    oss << std::setw(2) << std::setfill('0') << hour << "h ";
                 }
 
-                if (tDiscFree < tDiscEnc)
+                oss << std::setw(2) << std::setfill('0') << minute << "m "
+                    << std::setw(2) << std::setfill('0') << second << "s";
+                std::cerr << "Not enough free space on MD (need: " << oss.str() << ", have: ";
+
+                hour   = tDiscFree / 3600;
+                minute = ((tDiscFree % 3600) / 60);
+                second = ((tDiscFree % 3600) % 60);
+
+                oss.clear();
+                oss.str("");
+
+                if (hour)
                 {
-                    oss << std::setw(2) << std::setfill('0') << (tDiscEnc / 3600) << "h " 
-                        << std::setw(2) << std::setfill('0') << ((tDiscEnc % 3600) / 60) << "m "
-                        << std::setw(2) << std::setfill('0') << ((tDiscEnc % 3600) % 60) << "s";
-                    std::cerr << "Not enough free space on MD (need: " << oss.str() << ", have: " << sDiscFree <<  ")." << std::endl;
-                    ret = -2;
+                    oss << std::setw(2) << std::setfill('0') << hour << "h ";
                 }
+
+                oss << std::setw(2) << std::setfill('0') << minute << "m "
+                    << std::setw(2) << std::setfill('0') << second << "s";
+
+                std::cerr << oss.str() <<  ")." << std::endl;
+                ret = -2;
             }
         }
         catch(...)
@@ -1397,7 +1413,12 @@ int main(int argc, char** argv)
 
         if (!g_bAppend)
         {
-            std::string discName = g_bDontGroup ? tracks.at(0) : "";
+            std::string discName;
+
+            if ((isLp && g_bDontGroup) || !isLp)
+            {
+                discName = tracks.at(0);
+            }
             toNetMD(NetMDCmds::ERASE_DISC);
 
             toNetMD(NetMDCmds::DISC_TITLE, "", discName);
