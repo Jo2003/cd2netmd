@@ -29,6 +29,7 @@
 #include <thread>
 #include <vector>
 #include <condition_variable>
+#include <atomic>
 #include <windows.h>
 #include <tchar.h>
 #include <io.h>
@@ -39,7 +40,7 @@
 #include "json.hpp"
 
 /// tool version
-static constexpr const char* C2N_VERSION = "v0.3.2";
+static constexpr const char* C2N_VERSION = "v0.3.3";
 
 /// tool chain path
 static constexpr const char* TOOLCHAIN_PATH = "toolchain/";
@@ -111,9 +112,6 @@ HANDLE g_hAtracEnc_stdout_wr = INVALID_HANDLE_VALUE;
 HANDLE g_hAtracEnc_stdout_rd = INVALID_HANDLE_VALUE;
 HANDLE g_hCDRip_stdout_wr    = INVALID_HANDLE_VALUE;
 HANDLE g_hCDRip_stdout_rd    = INVALID_HANDLE_VALUE;
-
-/// run flag
-BOOL g_bRuns;
 
 /// status line helper
 int g_iNoTracks = 0;
@@ -794,7 +792,7 @@ void makeStatusBar(int rip, int enc, int trf)
 //!
 //! @return     0
 //------------------------------------------------------------------------------
-int tfunc_readPipes()
+int tfunc_readPipes(std::atomic_bool& run)
 {
     char buffNetMD[4096];
     char buffAtracEnc[4096];
@@ -808,7 +806,7 @@ int tfunc_readPipes()
     int rip  = 0, enc  = 0, trf  = 0;
     int rip_ = 0, enc_ = 0, trf_ = 0;
     
-    while(g_bRuns)
+    while(run)
     {
         // nemdcli stdout
         if (ReadFile(g_hNetMDCli_stdout_rd, buffNetMD, 4095, &readNetMD, 0))
@@ -1223,6 +1221,80 @@ std::string makeGroupTitle(const std::string& gt)
 }
 
 //------------------------------------------------------------------------------
+//! @brief      do CDDB request
+//!
+//! @param[in]  cd      Audio CD class
+//! @param[out] tracks  ref. to tracks vector
+//!
+//! @return    0 -> ok; else -> error 
+//------------------------------------------------------------------------------
+int cddbRequest(CAudioCD& cd, std::vector<std::string>& tracks)
+{
+    std::ostringstream oss;
+    oss << "/~cddb/cddb.cgi?cmd=cddb+query+" << cd.cddbQueryPart() << "&hello=me@you.org+localhost+MyRipper+0.0.1&proto=6";
+    printf("\nCDDB ID: 0x%08x\n\n", cd.cddbId());
+    VERBOSE(printf("CDDB Request: http://gnudb.gnudb.org%s\n",oss.str().c_str()));
+    
+    WinHttpWrapper::HttpRequest req(L"gnudb.gnudb.org", 443, true);
+    WinHttpWrapper::HttpResponse resp;
+    
+    if (req.Get(StringToWString(oss.str()), L"Content-Type: text/plain; charset=utf-8", resp))
+    {
+        oss.clear();
+        oss.str("");
+        oss << "/~cddb/cddb.cgi?cmd=cddb+read+" << parseCddbResultsEx(resp.text) << "&hello=me@you.org+localhost+MyRipper+0.0.1&proto=6";
+        VERBOSE(printf("CDDB Data: http://gnudb.gnudb.org%s\n",oss.str().c_str()));
+    
+        resp.Reset();
+    
+        if (req.Get(StringToWString(oss.str()), L"Content-Type: text/plain; charset=utf-8", resp))
+        {
+            parseCddbInfo(resp.text, tracks);
+        }
+    }
+
+    if (tracks.empty())
+    {
+        std::string choice;
+        bool choosen = false;
+        std::cout << "No CDDB entry found so your tracks on MD will be unnamed. "
+                  << "Do you want to continue (y/n)?" << std::endl;
+
+        do
+        {
+            std::cin >> choice;
+            switch (choice.at(0))
+            {
+            case 'y':
+            case 'Y':
+                {
+                    choosen = true;
+                    int t = static_cast<int>(cd.GetTrackCount());
+
+                    for (int i = 0; i <= t; i++)
+                    {
+                        tracks.push_back(std::string {});
+                    }
+                }
+                break;
+            case 'n':
+            case 'N':
+                choosen = true;
+                break;
+            default:
+                std::cout << "Try again: Do you want to continue (y/n)?" 
+                          << std::endl;
+                choice.clear();
+                break;
+            }
+        }
+        while(!choosen);
+    }
+
+    return tracks.empty() ? -1 : 0;
+}
+
+//------------------------------------------------------------------------------
 //! @brief      program entry point
 //!
 //! @param[in]  argc  The count of arguments
@@ -1247,15 +1319,14 @@ int main(int argc, char** argv)
     parser.Bool(g_bHelp        , 'h', "help"         , "Prints help screen and exits program.");
     parser.Bool(g_bAppend      , 'a', "append"       , "Don't erase MD before writing, but append tracks instead. "
                                                        "MDs discs title will not be changed.");
-    parser.Bool(g_bNoCDDBLookup, 'i', "ignore-cddb"  , "Ignore CDDB lookup errors. If no match in CDDB is found your "
-                                                       "tracks on MD will be untitled.");
+    parser.Bool(g_bNoCDDBLookup, 'n', "no-cddb"      , "Don't use CDDB. Your tracks on MD will be untitled.");
     parser.Bool(g_bDontGroup   , 'g', "no-group"     , "Don't create group for new tracks on MD.");
     parser.Var (g_cDrive       , 'd', "drive-letter" , '-'              , "Drive letter of CD drive to use (w/o colon). "
                                                                           "If not given first CD drive found will be used.");
 
     parser.Var (g_sEncoding    , 'e', "encode"       , std::string{"sp"}, "On-the-fly encoding mode on NetMD device while transfer. "
                                                                           "Default is 'sp'. Note: MDLP modi (lp2, lp4) are supported "
-                                                                          "only on SHARP IM-DR4x0, Sony MDS-JB980, Sony MDS-JB780.");
+                                                                          "only on SHARP IM-DR4x0, Sony MDS-JB980, and Sony MDS-JE780.");
     
     parser.Var (g_sXEncoding   , 'x', "ext-encode"   , std::string{"no"}, "External encoding before NetMD transfer. "
                                                                           "Default is 'no'. MDLP modi (lp2, lp4) are supported. "
@@ -1372,114 +1443,102 @@ int main(int argc, char** argv)
         return -2;
     }
     
-    oss << "/~cddb/cddb.cgi?cmd=cddb+query+" << AudioCD.cddbQueryPart() << "&hello=me@you.org+localhost+MyRipper+0.0.1&proto=6";
-    printf("\nCDDB ID: 0x%08x\n\n", AudioCD.cddbId());
-    VERBOSE(printf("CDDB Request: http://gnudb.gnudb.org%s\n",oss.str().c_str()));
-    
-    WinHttpWrapper::HttpRequest req(L"gnudb.gnudb.org", 443, true);
-    WinHttpWrapper::HttpResponse resp;
-    
-    if (req.Get(StringToWString(oss.str()), L"Content-Type: text/plain; charset=utf-8", resp))
+    if (g_bNoCDDBLookup)
     {
-        oss.clear();
-        oss.str("");
-        oss << "/~cddb/cddb.cgi?cmd=cddb+read+" << parseCddbResultsEx(resp.text) << "&hello=me@you.org+localhost+MyRipper+0.0.1&proto=6";
-        VERBOSE(printf("CDDB Data: http://gnudb.gnudb.org%s\n",oss.str().c_str()));
-    
-        resp.Reset();
-    
-        if (req.Get(StringToWString(oss.str()), L"Content-Type: text/plain; charset=utf-8", resp))
+        // no CDDB lookup -> simply create empty track- and disc names
+        // entry 0 is disc title
+        for ( uint32_t i = 0; i <= TrackCount; i++ )
         {
-            parseCddbInfo(resp.text, tracks);
+            tracks.push_back(std::string {});
+        }
+    }
+    else
+    {
+        if (cddbRequest(AudioCD, tracks) != 0)
+        {
+            closePipes();
+            return -2;
         }
     }
     
-    if (!tracks.empty() || g_bNoCDDBLookup)
+    // file name buffer
+    char fname[MAX_PATH];
+
+    // thread loop should run
+    std::atomic_bool bPWRun = {true};
+
+    // stdout parse thread
+    std::thread PipeWatch(tfunc_readPipes, std::ref(bPWRun));
+    
+    // external encoder thread
+    std::thread XEnc(tfunc_xencode);
+    
+    // netmd transfer thread
+    std::thread NetMd(tfunc_mdwrite);
+
+    if (!g_bAppend)
     {
-        // file name buffer
-        char fname[MAX_PATH];
+        std::string discName;
 
-        // thread loop should run
-        g_bRuns = TRUE;
-
-        // stdout parse thread
-        std::thread PipeWatch(tfunc_readPipes);
-        
-        // external encoder thread
-        std::thread XEnc(tfunc_xencode);
-        
-        // netmd transfer thread
-        std::thread NetMd(tfunc_mdwrite);
-
-        if (!g_bAppend)
+        if ((isLp && g_bDontGroup) || !isLp)
         {
-            std::string discName;
-
-            if ((isLp && g_bDontGroup) || !isLp)
-            {
-                discName = tracks.at(0);
-            }
-            toNetMD(NetMDCmds::ERASE_DISC);
-
-            toNetMD(NetMDCmds::DISC_TITLE, "", discName);
-            WriteFile(g_hNetMDCli_stdout_wr, " 0% \n", 5, nullptr, nullptr);
+            discName = tracks.at(0);
         }
-        
-        for (UINT i = 0; i < TrackCount; i++)
-        {
-            g_iRipTrack = i + 1;
-            GetTempFileNameA(tmpPath, "c2n", 0, fname);
+        toNetMD(NetMDCmds::ERASE_DISC);
 
-            VERBOSE(std::cout << "Extracting Audio track " << i+1 << " to " << fname << std::endl);
+        toNetMD(NetMDCmds::DISC_TITLE, "", discName);
+        WriteFile(g_hNetMDCli_stdout_wr, " 0% \n", 5, nullptr, nullptr);
+    }
+    
+    for (UINT i = 0; i < TrackCount; i++)
+    {
+        g_iRipTrack = i + 1;
+        GetTempFileNameA(tmpPath, "c2n", 0, fname);
 
-            AudioCD.ExtractTrack(i, fname);
-            
-            xenc_mtxTracks.lock();
-            xenc_TracksDescr.push_back({(tracks.empty() ? "" : tracks.at(i+1)), fname});
-            xenc_mtxTracks.unlock();
-            
-            // notify external encoder thread
-            {
-                std::lock_guard<std::mutex> lk(xenc_m);
-                xenc_ready = true;
-            }
-            xenc_cv.notify_one();
-        }
+        VERBOSE(std::cout << "Extracting Audio track " << i+1 << " to " << fname << std::endl);
+
+        AudioCD.ExtractTrack(i, fname);
         
-        AudioCD.UnlockCD();
-        AudioCD.EjectCD();
+        xenc_mtxTracks.lock();
+        xenc_TracksDescr.push_back({tracks.at(i+1), fname});
+        xenc_mtxTracks.unlock();
         
-        xenc_complete = true;
+        // notify external encoder thread
         {
             std::lock_guard<std::mutex> lk(xenc_m);
             xenc_ready = true;
         }
         xenc_cv.notify_one();
-
-        // wait for encoder thread
-        XEnc.join();
-        
-        // wait for md writing ends
-        NetMd.join();
-
-        if (isLp && !g_bDontGroup && !tracks.at(0).empty())
-        {
-            // put new encoded tracks into group
-            int lastTrack = g_bAppend ? (j["Disc"]["TCount"].get<int>() + TrackCount) : TrackCount;
-            toNetMD(NetMDCmds::GROUP_TRACK, "", makeGroupTitle(tracks.at(0)), lastTrack);
-        }
-
-        // stop thread loop
-        g_bRuns = FALSE;
-
-        // wait for stdout parser
-        PipeWatch.join();
     }
-    else
+    
+    AudioCD.UnlockCD();
+    AudioCD.EjectCD();
+    
+    xenc_complete = true;
     {
-        std::cerr << "Error: No CDDB entry found for this CD. "
-                  << "To force copy this CD, use command line option '-i'!" << std::endl;
+        std::lock_guard<std::mutex> lk(xenc_m);
+        xenc_ready = true;
     }
+    xenc_cv.notify_one();
+
+    // wait for encoder thread
+    XEnc.join();
+    
+    // wait for md writing ends
+    NetMd.join();
+
+    if (isLp && !g_bDontGroup && !tracks.at(0).empty())
+    {
+        // put new encoded tracks into group
+        int lastTrack = g_bAppend ? (j["Disc"]["TCount"].get<int>() + TrackCount) : TrackCount;
+        toNetMD(NetMDCmds::GROUP_TRACK, "", makeGroupTitle(tracks.at(0)), lastTrack);
+    }
+
+    // stop thread loop
+    bPWRun = false;
+
+    // wait for stdout parser
+    PipeWatch.join();
 
     closePipes();
 

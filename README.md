@@ -10,22 +10,27 @@ it will group the audio tracks into a new group named after the CD.
 
 cd2netmd supports following command line arguments:
 ```
+ cd2netmd Version v0.3.3, built at Nov  2 2021
+ Project site: https://github.com/Jo2003/cd2netmd
+ ------------------------------------------------
+
 Usage: cd2netmd.exe [options]
+
   -v --verbose [default: false]
       Does verbose output.
   -h --help [default: false]
       Prints help screen and exits program.
   -a --append [default: false]
       Don't erase MD before writing, but append tracks instead. MDs discs title will not be changed.
-  -i --ignore-cddb [default: false]
-      Ignore CDDB lookup errors. If no match in CDDB is found your tracks on MD will be untitled.
+  -n --no-cddb [default: false]
+      Don't use CDDB. Your tracks on MD will be untitled.
   -g --no-group [default: false]
       Don't create group for new tracks on MD.
   -d --drive-letter [default: -]
       Drive letter of CD drive to use (w/o colon). If not given first CD drive found will be used.
   -e --encode [default: sp]
       On-the-fly encoding mode on NetMD device while transfer. Default is 'sp'. Note: MDLP modi (lp2, lp4) are
-      supported only on SHARP IM-DR4x0, Sony MDS-JB980, Sony MDS-JB780.
+      supported only on SHARP IM-DR4x0, Sony MDS-JB980, and Sony MDS-JE780.
   -x --ext-encode [default: no]
       External encoding before NetMD transfer. Default is 'no'. MDLP modi (lp2, lp4) are supported. Note: lp4 sounds
       horrible. Use it - if any - only for audio books! In case your NetMD device supports On-the-fly encoding, better
