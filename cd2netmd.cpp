@@ -985,14 +985,20 @@ int tfunc_grabJson(HANDLE f, std::string& json, bool& run)
 void getMDInfo(nlohmann::json& j)
 {
     bool run = true;
+    uint8_t buff[4096];
     std::string junk;
+    
+    // clean pipe
+    static_cast<void>(ReadFile(g_hNetMDCli_stdout_rd, buff, 4095, nullptr, 0));
+
     std::thread JRead(tfunc_grabJson, g_hNetMDCli_stdout_rd, std::ref(junk), std::ref(run));
     toNetMD(NetMDCmds::JSON_INFO);
     Sleep(500);
     run = false;
     JRead.join();
 
-    junk = junk.substr(0, junk.rfind('}') + 1);
+    // we look for an object, not an array
+    junk = junk.substr(junk.find('{'), junk.rfind('}') + 1);
 
     VERBOSE(std::cout << junk << std::endl);
 
