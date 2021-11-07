@@ -1008,7 +1008,8 @@ void printMDInfo(const nlohmann::json& j)
 {
     try
     {
-        std::cout << "MD Information:" << std::endl
+        std::cout << std::endl
+                  << "MD Information:" << std::endl
                   << "===============" << std::endl;
 
         nlohmann::json disc = j["Disc"];
