@@ -40,7 +40,7 @@
 #include "json.hpp"
 
 /// tool version
-static constexpr const char* C2N_VERSION = "v0.3.3";
+static constexpr const char* C2N_VERSION = "v0.3.4";
 
 /// tool chain path
 static constexpr const char* TOOLCHAIN_PATH = "toolchain/";
@@ -1539,6 +1539,10 @@ int main(int argc, char** argv)
 
     // wait for stdout parser
     PipeWatch.join();
+
+    j.clear();
+    getMDInfo(j);
+    printMDInfo(j);
 
     closePipes();
 
