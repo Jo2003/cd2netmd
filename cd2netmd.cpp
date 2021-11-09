@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <fileapi.h>
+#include <iconv.h>
 #include <ostream>
 #include <string>
 #include <iostream>
@@ -38,9 +39,10 @@
 #include "Flags.hh"
 #include "CPipeStream.hpp"
 #include "json.hpp"
+#include "utils.h"
 
 /// tool version
-static constexpr const char* C2N_VERSION = "v0.3.4";
+static constexpr const char* C2N_VERSION = "v0.3.5";
 
 /// tool chain path
 static constexpr const char* TOOLCHAIN_PATH = "toolchain/";
@@ -343,6 +345,7 @@ std::string parseCddbResultsEx(const std::string& input)
 //------------------------------------------------------------------------------
 int parseCddbInfo(const std::string& input, std::vector<std::string>& info)
 {
+    iconv_t icv = iconv_open("US-ASCII//TRANSLIT//IGNORE", "UTF-8");
     std::string line, tok;
     size_t pos;
     std::istringstream iss(input);
@@ -370,9 +373,18 @@ int parseCddbInfo(const std::string& input, std::vector<std::string>& info)
             
             if (tok.size() > 0)
             {
+                if (icv != (iconv_t)-1)
+                {
+                    tok = cddb_str_iconv(icv, deUmlaut(tok).c_str());
+                }
                 info.push_back(tok);
             }
         }
+    }
+
+    if (icv != (iconv_t)-1)
+    {
+        iconv_close(icv);
     }
     
     return info.empty() ? -1 : 0;

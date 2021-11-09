@@ -12,6 +12,7 @@ set(SOURCES
 	CAudioCD.cpp
 	WinHttpWrapper.cpp
 	cd2netmd.cpp
+	utils.cpp
 )
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -27,3 +28,4 @@ SET(CMAKE_EXE_LINKER_FLAGS_RELEASE "-s")
 
 add_executable(cd2netmd ${SOURCES})
 target_link_libraries(cd2netmd "winhttp")
+target_link_libraries(cd2netmd "iconv")
