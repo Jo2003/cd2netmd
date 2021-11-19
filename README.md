@@ -1,7 +1,6 @@
 # cd2netmd
 A command line tool for Windows used to write audio tracks from CD to NetMD device. 
-It uses a fork of [go-netmd-cli](https://github.com/Jo2003/go-netmd-cli) and [go-netmd-lib](https://github.com/Jo2003/go-netmd-lib) 
-to write to NetMD device. 
+The NetMD part is based on linux-minidisc. The changes made by me can be found in my [NetMD Repo](https://github.com/Jo2003/netmd).
 
 External Atrac3 encoding is done using [atracdenc](https://github.com/dcherednik/atracdenc).
 
@@ -10,7 +9,7 @@ it will group the audio tracks into a new group named after the CD.
 
 cd2netmd supports following command line arguments:
 ```
- cd2netmd Version v0.3.5, built at Nov  9 2021
+ cd2netmd Version v0.4.0, built at Nov 19 2021
  Project site: https://github.com/Jo2003/cd2netmd
  ------------------------------------------------
 
@@ -28,16 +27,14 @@ Usage: cd2netmd.exe [options]
   -g --no-group [default: false]
       Don't create group for new tracks on MD.
   -d --drive-letter [default: -]
-      Drive letter of CD drive to use (w/o colon). If not given first CD drive found will be
-      used.
+      Drive letter of CD drive to use (w/o colon). If not given first CD drive found will be used.
   -e --encode [default: sp]
-      On-the-fly encoding mode on NetMD device while transfer. Default is 'sp'. Note: MDLP
-      modi (lp2, lp4) are supported only on SHARP IM-DR4x0, Sony MDS-JB980, and Sony
-      MDS-JE780.
+      On-the-fly encoding mode on NetMD device while transfer. Default is 'sp'. Note: MDLP modi
+      (lp2, lp4) are supported only on SHARP IM-DR4x0, Sony MDS-JB980, and Sony MDS-JE780.
   -x --ext-encode [default: no]
       External encoding before NetMD transfer. Default is 'no'. MDLP modi (lp2, lp4) are
-      supported. Note: lp4 sounds horrible. Use it - if any - only for audio books! In case
-      your NetMD device supports On-the-fly encoding, better use -e option instead!
+      supported. Note: lp4 sounds horrible. Use it - if any - only for audio books! In case your
+      NetMD device supports On-the-fly encoding, better use -e option instead!
 ```
 
 > Note:
@@ -59,10 +56,8 @@ combine in a bash script to do these things done in this pease of code.
 * `cd2netmd -d f` uses CD drive f:
 
 ## Thanks to following Projects
-* [go-netmd-cli](https://github.com/enimatek-nl/go-netmd-cli)
-* [go-netmd-lib](https://github.com/enimatek-nl/go-netmd-lib)
 * [atracdenc](https://github.com/dcherednik/atracdenc)
-* [linux-minidisc](https://github.com/vuori/linux-minidisc)
+* [Gavin Bendas fork of linux-minidisc](https://github.com/gavinbenda/linux-minidisc)
 * [JSON for Modern C++](https://github.com/nlohmann/json)
 * [Flags.hh](https://github.com/songgao/flags.hh)
 * [webminidisc](https://github.com/cybercase/webminidisc)

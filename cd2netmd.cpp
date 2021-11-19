@@ -42,7 +42,7 @@
 #include "utils.h"
 
 /// tool version
-static constexpr const char* C2N_VERSION = "v0.3.5";
+static constexpr const char* C2N_VERSION = "v0.4.0";
 
 /// tool chain path
 static constexpr const char* TOOLCHAIN_PATH = "toolchain/";
