@@ -65,6 +65,7 @@ enum class NetMDCmds : uint8_t {
     WRITE_TRACK_LP2,    ///< write tracl in lp2
     WRITE_TRACK_LP4,    ///< write track in lp4
     JSON_INFO,          ///< request json disc info
+    JSON_SUMMARY,       ///< request json disc info
     GROUP_TRACK         ///< group tracks
 };
 
@@ -185,6 +186,7 @@ int startExternalTool(const std::string cmdLine, HANDLE hdStdOut = INVALID_HANDL
         {
             // fake 100%
             WriteFile(hdStdOut, " 100% \n", 7, nullptr, nullptr);
+            FlushFileBuffers(hdStdOut);
         }
     }
 
@@ -551,24 +553,19 @@ int externAtrac3Encode(const std::string& file)
 //!
 //! @return     0 -> ok; -1 -> error
 //------------------------------------------------------------------------------
-int toNetMD(NetMDCmds cmd, const std::string& file = "", const std::string& title = "", int track = -1)
+int toNetMD(NetMDCmds cmd, const std::string& file = "", const std::string& title = "", int track_first = -1, int track_last = -1)
 {
     int err = 0;
     std::ostringstream cmdLine;
-    cmdLine << TOOLCHAIN_PATH << "netmd-cli.exe -y ";
-
-    if (g_bVerbose)
-    {
-        cmdLine << "-v ";
-    }
+    cmdLine << TOOLCHAIN_PATH << "netmdcli.exe -v ";
     
     switch(cmd)
     {
     case NetMDCmds::ERASE_DISC:
-        cmdLine << "erase_disc";
+        cmdLine << "erase force";
         break;
     case NetMDCmds::DISC_TITLE:
-        cmdLine << "plain_title \"" << title << "\"";
+        cmdLine << "rename_disc \"" << title << "\"";
         break;
     case NetMDCmds::WRITE_TRACK:
         cmdLine << "send \"" << file << "\" \"" << title << "\"";
@@ -580,10 +577,13 @@ int toNetMD(NetMDCmds cmd, const std::string& file = "", const std::string& titl
         cmdLine << "-d lp4 send \"" << file << "\" \"" << title << "\"";
         break;
     case NetMDCmds::JSON_INFO:
-        cmdLine << "list_json";
+        cmdLine << "json";
+        break;
+    case NetMDCmds::JSON_SUMMARY:
+        cmdLine << "json_short";
         break;
     case NetMDCmds::GROUP_TRACK:
-        cmdLine << "group " << track << " \"" << title << "\"";
+        cmdLine << "add_group \"" << title << "\" " << track_first << " " << track_last;
         break;
     default:
         err = -1;
@@ -994,7 +994,7 @@ int tfunc_grabJson(HANDLE f, std::string& json, bool& run)
 //!
 //! @param      j     reference to json object
 //------------------------------------------------------------------------------
-void getMDInfo(nlohmann::json& j)
+void getMDInfo(nlohmann::json& j, bool sum = true)
 {
     bool run = true;
     uint8_t buff[4096];
@@ -1004,13 +1004,17 @@ void getMDInfo(nlohmann::json& j)
     static_cast<void>(ReadFile(g_hNetMDCli_stdout_rd, buff, 4095, nullptr, 0));
 
     std::thread JRead(tfunc_grabJson, g_hNetMDCli_stdout_rd, std::ref(junk), std::ref(run));
-    toNetMD(NetMDCmds::JSON_INFO);
-    Sleep(500);
+    toNetMD(sum ? NetMDCmds::JSON_SUMMARY : NetMDCmds::JSON_INFO);
+    Sleep(1000);
     run = false;
     JRead.join();
 
     // we look for an object, not an array
-    junk = junk.substr(junk.find('{'), junk.rfind('}') + 1);
+    std::string::size_type first, last;
+    first = junk.find('{');
+    last  = junk.rfind('}') + 1;
+
+    junk = junk.substr(first, last - first);
 
     VERBOSE(std::cout << junk << std::endl);
 
@@ -1030,37 +1034,39 @@ void printMDInfo(const nlohmann::json& j)
                   << "MD Information:" << std::endl
                   << "===============" << std::endl;
 
-        nlohmann::json disc = j["Disc"];
+        nlohmann::json disc = j;
         std::cout << "Disc Name: "
-                  << disc["Name"].get<std::string>() << std::endl;
+                  << disc["title"].get<std::string>() << std::endl;
         
-        if (disc["Groups"].is_array())
+        if (disc["groups"].is_array())
         {
-            for (const auto& group : disc["Groups"])
+            for (const auto& group : disc["groups"])
             {
-                std::cout << " [" << group["Name"].get<std::string>() << "]" << std::endl;
+                std::cout << " [" << group["name"].get<std::string>() << "]" << std::endl;
 
-                if (group["Tracks"].is_array())
+                if (group["tracks"].is_array())
                 {
-                    for (const auto& track : group["Tracks"])
+                    for (const auto& track : group["tracks"])
                     {
-                        std::cout << "  " << std::setw(2) << std::right << track["No"].get<int>() << std::left
-                                  << ") " << track["Name"].get<std::string>() 
-                                  << " " << track["Length"].get<std::string>() 
-                                  << " " << track["Enc"].get<std::string>() << std::endl;
+                        std::cout << "  " << std::setw(2) << std::right << (track["no"].get<int>() + 1) << std::left
+                                  << ") " << track["name"].get<std::string>() 
+                                  << " " << track["time"].get<std::string>() 
+                                  << " " << track["bitrate"].get<std::string>()
+                                  << " " << track["protect"].get<std::string>() << std::endl;
                     }
                 }
             }
         }
 
-        if (disc["Tracks"].is_array())
+        if (disc["tracks"].is_array())
         {
-            for (const auto& track : disc["Tracks"])
+            for (const auto& track : disc["tracks"])
             {
-                std::cout << std::setw(2) << std::right << track["No"].get<int>() << std::left
-                          << ") " << track["Name"].get<std::string>() 
-                          << " " << track["Length"].get<std::string>() 
-                          << " " << track["Enc"].get<std::string>() << std::endl;
+                std::cout << std::setw(2) << std::right << (track["no"].get<int>() + 1 )<< std::left
+                                  << ") " << track["name"].get<std::string>() 
+                                  << " " << track["time"].get<std::string>() 
+                                  << " " << track["bitrate"].get<std::string>()
+                                  << " " << track["protect"].get<std::string>() << std::endl;
             }
         }
     }
@@ -1081,6 +1087,7 @@ void printMDInfo(const nlohmann::json& j)
 int sanityCheck(uint32_t discTime, const nlohmann::json& j)
 {
     int ret = 0;
+    int hour, minute, second;
     std::ostringstream oss;
 
     // do some more sanity checks
@@ -1088,11 +1095,11 @@ int sanityCheck(uint32_t discTime, const nlohmann::json& j)
     {
         try
         {
-            if (((g_sEncoding == "lp4") || (g_sEncoding == "lp2")) && !j["OfLpEnc"].get<bool>())
+            if (((g_sEncoding == "lp4") || (g_sEncoding == "lp2")) && (j["otf_enc"].get<int>() == 0))
             {
                 std::cout << std::endl
                           << "Note:" << std::endl 
-                          << "Your NetMD device \"" << j["Name"].get<std::string>() 
+                          << "Your NetMD device \"" << j["device"].get<std::string>() 
                           << "\" doesn't support on-the-fly lp encoding!" << std::endl 
                           << "We'll use the external encoder instead!" << std::endl;
 
@@ -1100,11 +1107,25 @@ int sanityCheck(uint32_t discTime, const nlohmann::json& j)
                 g_sEncoding  = "sp";
             }
 
-            if ((j["Disc"]["TotSec"].get<int>() != j["Disc"]["FreeSec"].get<int>()) && !g_bAppend)
+            if ((j["t_total"].get<int>() != j["t_free"].get<int>()) && !g_bAppend)
             {
-                printMDInfo(j);
+                uint32_t usedTime = j["t_used"].get<int>();
+                hour     = usedTime / 3600;
+                minute   = ((usedTime % 3600) / 60);
+                second   = ((usedTime % 3600) % 60);
 
                 std::cout << std::endl 
+                          << "Disc Name: " << j["title"].get<std::string>() << std::endl
+                          << "Track count: " << j["trk_count"].get<int>() << std::endl
+                          << "Time rcorded: ";
+
+                if (hour)
+                {
+                    std::cout << std::setw(2) << std::setfill('0') << hour << "h ";
+                }
+
+                std::cout << std::setw(2) << std::setfill('0') << minute << "m "
+                          << std::setw(2) << std::setfill('0') << second << "s" << std::endl
                           << "Do you want to (a)ppend the tracks, (e)rase the MD, or (q)uit?" 
                           << std::endl;
 
@@ -1129,7 +1150,7 @@ int sanityCheck(uint32_t discTime, const nlohmann::json& j)
                 while(!done);
             }
 
-            uint32_t tDiscFree = g_bAppend ? j["Disc"]["FreeSec"].get<uint32_t>() : j["Disc"]["TotSec"].get<uint32_t>();
+            uint32_t tDiscFree = g_bAppend ? j["t_free"].get<uint32_t>() : j["t_total"].get<uint32_t>();
 
             // do we use compression ... ?
             if ((g_sXEncoding == "lp2") || (g_sEncoding == "lp2"))
@@ -1143,7 +1164,6 @@ int sanityCheck(uint32_t discTime, const nlohmann::json& j)
 
             if (tDiscFree < discTime)
             {
-                int hour, minute, second;
                 hour   = discTime / 3600;
                 minute = ((discTime % 3600) / 60);
                 second = ((discTime % 3600) % 60);
@@ -1197,11 +1217,6 @@ std::string makeGroupTitle(const std::string& gt)
     std::size_t pos;
     std::string tok = gt;
 
-    if ((pos = gt.find('-')) != std::string::npos)
-    {
-        tok = gt.substr(pos + 1);
-    }
-
     while ((pos = tok.find_first_of(" \t")) != std::string::npos)
     {
         if (pos == 0)
@@ -1214,8 +1229,14 @@ std::string makeGroupTitle(const std::string& gt)
         }
     }
 
+    // remove double spaces
+    while ((pos = tok.find("  ")) != std::string::npos)
+    {
+        tok = tok.replace(pos, 2, " ");
+    }
+
     // remove some well known token starts
-    if ((pos = tok.find_first_of("([{-/<>")) != std::string::npos)
+    if ((pos = tok.find_first_of("([{/<>")) != std::string::npos)
     {
         if (pos > 5)
         {
@@ -1226,14 +1247,6 @@ std::string makeGroupTitle(const std::string& gt)
     if ((pos = tok.find_last_not_of(" \t")) != std::string::npos)
     {
         tok = tok.substr(0, pos + 1);
-    }
-
-    if (tok.size() > 25)
-    {
-        if ((pos = tok.find_last_of(" \t", 25)) != std::string::npos)
-        {
-            tok = tok.substr(0, pos);
-        }
     }
 
     return tok;
@@ -1549,8 +1562,9 @@ int main(int argc, char** argv)
     if (isLp && !g_bDontGroup && !tracks.at(0).empty())
     {
         // put new encoded tracks into group
-        int lastTrack = g_bAppend ? (j["Disc"]["TCount"].get<int>() + TrackCount) : TrackCount;
-        toNetMD(NetMDCmds::GROUP_TRACK, "", makeGroupTitle(tracks.at(0)), lastTrack);
+        int firstTrack = g_bAppend ? (j["trk_count"].get<int>() + 1)  : 1;
+        int lastTrack  = g_bAppend ? (j["trk_count"].get<int>() + TrackCount) : TrackCount;
+        toNetMD(NetMDCmds::GROUP_TRACK, "", makeGroupTitle(tracks.at(0)), firstTrack, lastTrack);
     }
 
     // stop thread loop
@@ -1560,7 +1574,7 @@ int main(int argc, char** argv)
     PipeWatch.join();
 
     j.clear();
-    getMDInfo(j);
+    getMDInfo(j, false);
     printMDInfo(j);
 
     closePipes();
