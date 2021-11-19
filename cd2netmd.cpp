@@ -1005,7 +1005,7 @@ void getMDInfo(nlohmann::json& j, bool sum = true)
 
     std::thread JRead(tfunc_grabJson, g_hNetMDCli_stdout_rd, std::ref(junk), std::ref(run));
     toNetMD(sum ? NetMDCmds::JSON_SUMMARY : NetMDCmds::JSON_INFO);
-    Sleep(1000);
+    Sleep(500);
     run = false;
     JRead.join();
 
